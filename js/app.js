@@ -2851,6 +2851,7 @@ class Game{
     this._staffRoomPickerOpen = null; // staff id whose custom room-picker list is expanded
     this.buildMode = null; // {type}
     this.hireMode = null; // {staffId} - awaiting a tap on a room to place a freshly-hired staff member
+    this._speedBeforeHireMode = null; // {paused,speedMult} snapshot to restore once hireMode resolves
     this.buildDrag = null; // {startTileX, startTileY, curTileX, curTileY}
     this.placeMode = null; // {type} - furniture placement mode, tap-to-place
     this.unlockedResearch = new Set();
@@ -3272,6 +3273,7 @@ class Game{
             this.hireMode = null;
             document.getElementById("hirePlaceBar").style.display = "none";
             this._syncCancelBtn();
+            this._resumeAfterHireMode();
           }
           // on failure, assignStaffToRoom already pushed the specific reason as a toast, and
           // hireMode stays active so the player can just tap a different room
@@ -3622,8 +3624,10 @@ class Game{
   // Step 1 of hiring (design feedback: shouldn't auto-place someone in a random room). Creates
   // the staff member immediately (cost is spent right away) but marks them `pendingHire` - they
   // stand near the entrance, don't work yet, and won't start their onboarding countdown until
-  // the player taps the room to assign them to. The game is paused so the player can look around
-  // calmly before deciding.
+  // the player taps the room to assign them to. The simulation pauses so nothing moves out from
+  // under the player while they decide, but this is a lightweight "hold" rather than the real
+  // Pause button: no dimmed overlay, and whatever speed was running resumes automatically once
+  // the room is picked (or the hire is cancelled) - see _resumeAfterHireMode.
   beginHirePlacement(type, specialty){
     const def = STAFF_TYPES[type];
     if(!this.economy.canAfford(def.cost)){ this.pushToast("Not enough money to hire.", "bad"); return; }
@@ -3635,9 +3639,10 @@ class Game{
     this.staff.push(st);
     this.hireMode = {staffId: st.id};
     this.closeAllPanels();
+    // Remember exactly how the game was running (paused or which speed) so it can resume to the
+    // same state afterward, instead of always landing back on Pause.
+    this._speedBeforeHireMode = { paused:this.paused, speedMult:this.speedMult };
     this.paused = true;
-    document.querySelectorAll(".speedBtn").forEach(b=>b.classList.toggle("active", b.dataset.speed==="0"));
-    document.getElementById("pauseOverlay").classList.add("show");
     const bar = document.getElementById("hirePlaceBar");
     document.getElementById("hpTitle").textContent = st.def.symbol+" "+st.name;
     document.getElementById("hpDetail").textContent = "Tap a room to assign them";
@@ -3645,6 +3650,19 @@ class Game{
     this._syncCancelBtn();
     this.pushToast(st.name+" hired - tap a room to assign them.", "good");
     this.save();
+  }
+  // Restores whatever speed/pause state was active right before beginHirePlacement, called once
+  // the room has been picked (success) or the hire was cancelled - either way, hiring someone
+  // shouldn't leave the whole game stuck on Pause afterward.
+  _resumeAfterHireMode(){
+    if(this._speedBeforeHireMode){
+      this.paused = this._speedBeforeHireMode.paused;
+      this.speedMult = this._speedBeforeHireMode.speedMult;
+      const sp = this.paused ? "0" : String(this.speedMult);
+      document.querySelectorAll(".speedBtn").forEach(b=>b.classList.toggle("active", b.dataset.speed===sp));
+      document.getElementById("pauseOverlay").classList.toggle("show", this.paused);
+      this._speedBeforeHireMode = null;
+    }
   }
   cancelHireMode(){
     if(this.hireMode){
@@ -3660,6 +3678,7 @@ class Game{
     this.hireMode = null;
     document.getElementById("hirePlaceBar").style.display = "none";
     this._syncCancelBtn();
+    this._resumeAfterHireMode();
   }
   // Legacy direct-hire path (auto-assigns to the first compatible room, no placement step) -
   // kept for save-compatibility and any internal callers that want the old one-shot behavior.
