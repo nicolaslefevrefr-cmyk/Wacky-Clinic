@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Wacky Clinic</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#e0733f">
+<meta name="description" content="Wacky Clinic - a Theme Hospital-inspired management game.">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Wacky Clinic">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icons/icon-512.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+<button id="cancelModeBtn" title="Cancel">✕</button>
+<div id="pauseOverlay">⏸ PAUSED</div>
+<div id="confirmModal">
+  <div class="box">
+    <p id="confirmMessage">Are you sure?</p>
+    <div class="row">
+      <button class="panelBtn ghost" id="confirmCancelBtn" style="flex:1;">Cancel</button>
+      <button class="panelBtn danger" id="confirmOkBtn" style="flex:1;">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<div id="startScreen">
+  <h1>🏥 Wacky Clinic</h1>
+  <p>Build your hospital, treat patients with perfectly absurd diseases, and become the reference in delirious healthcare.</p>
+  <button class="menuBtn" id="btnNewGame">New Game</button>
+  <button class="menuBtn secondary" id="btnContinue">Continue</button>
+</div>
+
+<div id="ui">
+  <div class="ui-layer" id="hud-top">
+    <div class="hud-chip money clickable" id="hMoneyChip" data-metric="money">💰 <span id="hMoney">0</span> $</div>
+    <div class="hud-chip clickable" id="hPatientsChip" data-metric="patients">👥 <span id="hPatients">0</span></div>
+    <div class="hud-chip clickable" id="hHealthChip" data-metric="health">🏥 <span id="hHealth">100</span>%</div>
+    <div class="hud-chip clickable" id="hRepChip" data-metric="reputation">⭐ <span id="hRep">70</span>%</div>
+    <div class="hud-chip" id="hDayChip">📅 Day <span id="hDay">1</span></div>
+    <div id="hud-spacer"></div>
+    <div id="speedControls">
+      <button class="speedBtn active" data-speed="0">⏸</button>
+      <button class="speedBtn" data-speed="1">▶</button>
+      <button class="speedBtn" data-speed="2">▶▶</button>
+    </div>
+    <button id="settingsBtn">⚙</button>
+    <button id="alertsBtn">🔔 Alerts <span class="count" id="alertsCount">0</span></button>
+    <button id="objectivesBtn">🎯 Objectives</button>
+  </div>
+
+  <div id="notifications"></div>
+
+  <div id="zoomControls">
+    <button class="zoomBtn" id="zoomIn">+</button>
+    <button class="zoomBtn" id="zoomOut">−</button>
+  </div>
+
+  <div class="panel" id="panelBuild">
+    <h3>Build a room <button class="closeX" data-close="panelBuild">✕</button></h3>
+    <div id="roomList"></div>
+  </div>
+
+  <div class="panel" id="panelFurniture">
+    <h3>Place furniture <button class="closeX" data-close="panelFurniture">✕</button></h3>
+    <div style="font-size:11.5px;color:#666;margin-bottom:8px;">Tap an item, then tap an open floor tile to place it. All of these are functional, not just decoration.</div>
+    <div id="furnitureList"></div>
+  </div>
+
+  <div class="panel" id="panelStaffHire">
+    <h3>Staff <button class="closeX" data-close="panelStaffHire">✕</button></h3>
+    <div class="subTabs">
+      <button class="subTabBtn active" id="staffSubTabHire">Hire</button>
+      <button class="subTabBtn" id="staffSubTabRoster">Roster (<span id="staffRosterCount">0</span>)</button>
+    </div>
+    <div id="hireList"></div>
+    <div id="staffRosterList" style="display:none;"></div>
+  </div>
+
+  <div class="panel" id="panelPatientsList">
+    <h3>Patients <button class="closeX" data-close="panelPatientsList">✕</button></h3>
+    <div id="patientsRosterList"></div>
+  </div>
+
+  <div class="panel" id="panelManage">
+    <h3>Management <button class="closeX" data-close="panelManage">✕</button></h3>
+    <div class="statRow"><span class="label">Income/day</span><b id="mgIncome">0 $</b></div>
+    <div class="statRow"><span class="label">Expenses/day</span><b id="mgExpense">0 $</b></div>
+    <div class="statRow"><span class="label">Staff</span><b id="mgStaffCount">0</b></div>
+    <div class="statRow"><span class="label">Rooms</span><b id="mgRoomCount">0</b></div>
+    <div style="margin-top:10px;">
+      <div style="font-size:12px;font-weight:700;color:#555;margin-bottom:4px;">Income vs expenses (history)</div>
+      <div id="econChart"></div>
+    </div>
+    <div class="panelBtnRow">
+      <button class="panelBtn ghost" id="mgSave">💾 Save</button>
+      <button class="panelBtn danger" id="mgReset">🗑 Reset</button>
+    </div>
+    <div class="panelBtnRow">
+      <button class="panelBtn ghost" id="mgExport">⬇ Export save (.json)</button>
+      <button class="panelBtn ghost" id="mgImport">⬆ Import save (.json)</button>
+    </div>
+    <input type="file" id="mgImportFile" accept="application/json,.json" style="display:none;">
+    <div class="panelBtnRow">
+      <button class="panelBtn primary" id="mgOpenPolicy" style="width:100%;">📋 Hospital Policy</button>
+    </div>
+  </div>
+
+  <div class="panel" id="panelPolicy">
+    <h3>📋 Hospital Policy <button class="closeX" data-close="panelPolicy">✕</button></h3>
+
+    <div class="policyBlock">
+      <div class="policyHead"><b>Diagnosis Termination</b><span id="polDiagVal">100%</span></div>
+      <input type="range" id="polDiagSlider" min="100" max="200" step="5" value="100">
+      <div class="policyDesc">Above 100%, a fully-diagnosed patient is kept for extra paid tests they don't actually need - quiet-time cash, at the cost of extra strain and the risk they get fed up and leave without paying at all.</div>
+    </div>
+
+    <div class="policyBlock">
+      <div class="policyHead"><b>Send Staff to Rest</b><span id="polRestVal">50%</span></div>
+      <input type="range" id="polRestSlider" min="0" max="100" step="5" value="50">
+      <div class="policyDesc">Low: staff rest early and often - alert, but less time actually working. High: staff push through exhaustion - more mistakes, unhappier, and they may resign if pushed too far.</div>
+    </div>
+
+    <div class="policyBlock">
+      <div class="policyHead"><b>Staff Leave Rooms</b>
+        <button class="toggleSwitch" id="polLeaveToggle"></button>
+      </div>
+      <div class="policyDesc">Off: staff stay in their own room (most efficient, but you need one for every room you want staffed). On: idle staff can be pulled to help wherever the queue is worst - fewer staff needed overall, at the cost of constant rotation between rooms.</div>
+    </div>
+  </div>
+
+  <div class="panel" id="panelResearchTree">
+    <h3>🔬 Research tree <button class="closeX" data-close="panelResearchTree">✕</button></h3>
+    <div id="researchList"></div>
+  </div>
+
+  <div class="panel" id="panelSelection">
+    <h3><span id="selName">-</span> <button class="closeX" data-close="panelSelection">✕</button></h3>
+    <div id="selBody"></div>
+  </div>
+
+  <div class="panel" id="panelObjectives">
+    <h3>Objectives <button class="closeX" data-close="panelObjectives">✕</button></h3>
+    <div id="objList"></div>
+  </div>
+
+  <div class="panel" id="panelAlerts">
+    <h3>🔔 Active alerts <button class="closeX" data-close="panelAlerts">✕</button></h3>
+    <div id="alertsList"></div>
+  </div>
+
+  <div class="panel" id="panelSettings">
+    <h3>⚙ Settings <button class="closeX" data-close="panelSettings">✕</button></h3>
+    <div class="settingsRow">
+      <div><div>Show pathfinding</div><div class="desc">Draw each person's remaining path on the floor</div></div>
+      <button class="toggleSwitch" id="toggleShowPaths"></button>
+    </div>
+    <div class="settingsRow">
+      <div><div>Show south/east walls</div><div class="desc">Reveal the normally-hidden near walls, to see what they'd look like</div></div>
+      <button class="toggleSwitch on" id="toggleHiddenWalls"></button>
+    </div>
+  </div>
+
+  <div class="panel" id="panelStatsChart">
+    <h3><span id="statsChartTitle">Trend</span> <button class="closeX" data-close="panelStatsChart">✕</button></h3>
+    <div id="statsChart"></div>
+  </div>
+
+  <div class="ui-layer" id="buildConfirmBar">
+    <div class="info"><b id="bcTitle">Room</b><span id="bcDetail">Drag on the grid</span></div>
+    <div id="bcDoorRow" style="display:flex;gap:4px;width:100%;align-items:center;">
+      <span style="font-size:11.5px;color:#666;margin-right:2px;">Entrance:</span>
+      <button class="panelBtn ghost doorSideBtn" data-side="north" title="North wall" style="flex:1;min-height:38px;font-size:17px;line-height:1;">↗</button>
+      <button class="panelBtn ghost doorSideBtn" data-side="east" title="East wall" style="flex:1;min-height:38px;font-size:17px;line-height:1;">↘</button>
+      <button class="panelBtn ghost doorSideBtn" data-side="south" title="South wall" style="flex:1;min-height:38px;font-size:17px;line-height:1;">↙</button>
+      <button class="panelBtn ghost doorSideBtn" data-side="west" title="West wall" style="flex:1;min-height:38px;font-size:17px;line-height:1;">↖</button>
+    </div>
+    <button class="panelBtn ghost" id="bcCancel">Cancel</button>
+    <button class="panelBtn primary" id="bcConfirm">Build</button>
+  </div>
+
+  <div class="ui-layer" id="furniturePlaceBar" style="display:none;">
+    <div class="info"><b id="fpTitle">Item</b><span id="fpDetail">Tap an open floor tile</span></div>
+    <button class="panelBtn ghost" id="fpCancel">Cancel</button>
+  </div>
+
+  <div class="ui-layer" id="hirePlaceBar" style="display:none;">
+    <div class="info"><b id="hpTitle">New hire</b><span id="hpDetail">Tap a room to assign them</span></div>
+    <button class="panelBtn ghost" id="hpCancel">Cancel</button>
+  </div>
+
+  <div class="ui-layer" id="hud-bottom">
+    <button class="bigBtn" id="btnBuild"><span class="ic">🏗</span>Build</button>
+    <button class="bigBtn" id="btnFurniture"><span class="ic">🪑</span>Furniture</button>
+    <button class="bigBtn" id="btnStaff"><span class="ic">👨‍⚕️</span>Staff</button>
+    <button class="bigBtn" id="btnPatients"><span class="ic">🧍</span>Patients</button>
+    <button class="bigBtn" id="btnResearch"><span class="ic">🔬</span>Research</button>
+    <button class="bigBtn" id="btnManage"><span class="ic">⚙</span>Manage</button>
+  </div>
+</div>
+
+
+
+<script src="js/app.js" defer></script>
+<script>
+  if("serviceWorker" in navigator){
+    window.addEventListener("load", ()=>{
+      navigator.serviceWorker.register("service-worker.js").catch(err=>console.warn("Service worker registration failed:", err));
+    });
+  }
+</script>
+</body>
+</html>

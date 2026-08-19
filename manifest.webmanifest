@@ -1,0 +1,31 @@
+{
+  "name": "Wacky Clinic",
+  "short_name": "Wacky Clinic",
+  "description": "Build your hospital, treat patients with perfectly absurd diseases, and become the reference in delirious healthcare.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f2ede2",
+  "theme_color": "#e0733f",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
