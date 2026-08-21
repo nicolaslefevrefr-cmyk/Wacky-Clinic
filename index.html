@@ -40,25 +40,27 @@
 </div>
 
 <div id="ui">
-  <div class="ui-layer" id="hud-top">
-    <div class="hud-chip money clickable" id="hMoneyChip" data-metric="money">💰 <span id="hMoney">0</span> $</div>
-    <div class="hud-chip clickable" id="hPatientsChip" data-metric="patients">👥 <span id="hPatients">0</span></div>
-    <div class="hud-chip clickable" id="hHealthChip" data-metric="health">🏥 <span id="hHealth">100</span>%</div>
-    <div class="hud-chip clickable" id="hRepChip" data-metric="reputation">⭐ <span id="hRep">70</span>%</div>
-    <div class="hud-chip" id="hDayChip">📅 Day <span id="hDay">1</span></div>
-    <div id="hud-spacer"></div>
-    <div id="speedControls">
-      <button class="speedBtn active" data-speed="0">⏸</button>
-      <button class="speedBtn" data-speed="1">▶</button>
-      <button class="speedBtn" data-speed="2">▶▶</button>
+  <div id="hud-top-wrap">
+    <div class="ui-layer" id="hud-top">
+      <div class="hud-chip money clickable" id="hMoneyChip" data-metric="money">💰 <span id="hMoney">0</span> $</div>
+      <div class="hud-chip clickable" id="hPatientsChip" data-metric="patients">👥 <span id="hPatients">0</span></div>
+      <div class="hud-chip clickable" id="hHealthChip" data-metric="health">🏥 <span id="hHealth">100</span>%</div>
+      <div class="hud-chip clickable" id="hRepChip" data-metric="reputation">⭐ <span id="hRep">70</span>%</div>
+      <div class="hud-chip" id="hDayChip">📅 Day <span id="hDay">1</span></div>
+      <div id="hud-spacer"></div>
+      <div id="speedControls">
+        <button class="speedBtn active" data-speed="0">⏸</button>
+        <button class="speedBtn" data-speed="1">▶</button>
+        <button class="speedBtn" data-speed="2">▶▶</button>
+      </div>
+      <button id="settingsBtn">⚙</button>
+      <button id="alertsBtn">🔔 Alerts <span class="count" id="alertsCount">0</span></button>
+      <button id="objectivesBtn">🎯 Objectives</button>
     </div>
-    <button id="settingsBtn">⚙</button>
-    <button id="alertsBtn">🔔 Alerts <span class="count" id="alertsCount">0</span></button>
-    <button id="objectivesBtn">🎯 Objectives</button>
-  </div>
 
-  <div id="msgBanner">
-    <div id="msgBannerTrack"></div>
+    <div id="msgBanner">
+      <div id="msgBannerTrack"></div>
+    </div>
   </div>
 
   <div class="panel" id="panelMsgHistory">

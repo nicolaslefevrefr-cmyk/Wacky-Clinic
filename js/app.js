@@ -5,7 +5,7 @@
    0. CONSTANTS
    ========================================================================= */
 const TILE = 32;
-const GAME_VERSION = "1.4.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
+const GAME_VERSION = "1.4.1"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
 const CONSTRUCTION_SECONDS = 5; // how long a build/demolish/hire takes to actually complete (design feedback: shouldn't be instant)
 const MAP_W = 26;   // tiles
 const MAP_H = 18;   // tiles
@@ -3531,13 +3531,13 @@ class Game{
     }
     this.economy.spend(def.cost);
     const newRoom = this.hospital.addRoom(pb.type, pb.x, pb.y, pb.w, pb.h, pb.doorSide);
-    // Construction takes a few seconds rather than completing instantly (design feedback) - the
-    // room exists (so its footprint blocks further building/placement right away) but is not
-    // usable by staff or patients, and renders with a scaffolding overlay, until the timer
-    // finishes in Game._updateConstruction.
-    newRoom._constructing = true;
-    newRoom._constructionTimer = CONSTRUCTION_SECONDS;
-    this.pushToast(def.name+" under construction ("+CONSTRUCTION_SECONDS+"s)...", "good");
+    // Rooms are usable the instant they're built (design feedback: a construction delay meant
+    // staff couldn't be assigned to a brand-new room right away, which was especially painful
+    // at the very start of a game when nothing else exists yet to do in the meantime). Demolish
+    // still takes a few seconds (see deleteRoom) since that doesn't block anything the player
+    // is trying to do.
+    this._rebalanceQueuesAfterBuild(newRoom);
+    this.pushToast(def.name+" built!", "good");
     this.cancelBuild();
     this.save();
   }
@@ -4297,8 +4297,12 @@ class Game{
       const pa = ROOM_TREE_LAYOUT[a], pb = ROOM_TREE_LAYOUT[b];
       if(!pa || !pb) return;
       const line = document.createElementNS("http://www.w3.org/2000/svg","line");
-      line.setAttribute("x1", pa.x+NW/2); line.setAttribute("y1", pa.y+NH);
-      line.setAttribute("x2", pb.x+NW/2); line.setAttribute("y2", pb.y);
+      // Connect true box centers (design feedback: lines used to leave from the bottom of one
+      // box and arrive at the top of the next, which looked scattered/off-angle whenever nodes
+      // weren't neatly stacked vertically) - a plain center-to-center line always reads cleanly
+      // regardless of the two nodes' relative position.
+      line.setAttribute("x1", pa.x+NW/2); line.setAttribute("y1", pa.y+NH/2);
+      line.setAttribute("x2", pb.x+NW/2); line.setAttribute("y2", pb.y+NH/2);
       line.setAttribute("stroke", "#b9c2a8"); line.setAttribute("stroke-width", "2");
       svg.appendChild(line);
     });
@@ -6657,9 +6661,11 @@ class Game{
           ctx.fillStyle = shadeForCondition(base, room.condition);
         } else if(!inHospitalFootprint(x,y,1,1)){
           // Outside the T-shaped hospital grounds entirely (the "cut corners" of the map) -
-          // rendered as exterior grass rather than the interior corridor tint, so the building's
-          // actual footprint (now traced by _pushBoundaryWalls) reads clearly against it.
-          ctx.fillStyle = ((x+y)%2===0)? "#a9c48a" : "#9fb87f";
+          // filled with the same textured grass pattern as the exterior beyond the map edges
+          // (design feedback: this used to be a flat, slightly different green that didn't
+          // actually read as "grass" next to the real textured exterior - now it's visually
+          // one continuous lawn right up to the building's own footprint).
+          ctx.fillStyle = this.grassPattern || "#3f7a3b";
         } else {
           ctx.fillStyle = ((x+y)%2===0)? "#cfc7ae" : "#bdb59d";
         }
