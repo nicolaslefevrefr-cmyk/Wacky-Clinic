@@ -5,11 +5,68 @@
    0. CONSTANTS
    ========================================================================= */
 const TILE = 32;
+const GAME_VERSION = "1.4.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
 const CONSTRUCTION_SECONDS = 5; // how long a build/demolish/hire takes to actually complete (design feedback: shouldn't be instant)
 const MAP_W = 26;   // tiles
 const MAP_H = 18;   // tiles
+// The buildable footprint is a "T" shape rather than the full rectangle (design feedback: a
+// plain square hospital felt too generic/easy to fill edge-to-edge; a T forces some layout
+// planning). BAR is the wide top crossbar, STEM is the narrower vertical branch going down to
+// the entrance - both are at least 8 tiles across, per the "no branch narrower than 8 cells"
+// requirement. They're contiguous (STEM starts exactly where BAR ends) so together they trace
+// a single unbroken T with no gap at the seam.
+const HOSPITAL_BAR = { x0:1, x1:25, y0:1, y1:9 };   // 24 wide x 8 tall
+const HOSPITAL_STEM = { x0:9, x1:17, y0:9, y1:18 }; // 8 wide x 9 tall, reaches the south edge (entrance)
+// True if the whole rectangle [tx,ty,tx+tw,ty+th) lies inside the T-shaped footprint above -
+// used by canPlaceRoom so nothing can be built in the "cut corners" outside the T.
+function inHospitalFootprint(tx,ty,tw,th){
+  const x0=tx, y0=ty, x1=tx+tw, y1=ty+th;
+  if(x0<0||y0<0||x1>MAP_W||y1>MAP_H) return false;
+  if(y1 > HOSPITAL_BAR.y1){ // any part of the room falls in the stem's row range
+    if(x0 < HOSPITAL_STEM.x0 || x1 > HOSPITAL_STEM.x1) return false;
+  }
+  if(y0 < HOSPITAL_BAR.y1){ // any part of the room falls in the bar's row range
+    if(x0 < HOSPITAL_BAR.x0 || x1 > HOSPITAL_BAR.x1) return false;
+  }
+  return true;
+}
 const SAVE_KEY = "wacky_clinic_save_v2";
 const DPR_CAP = 2.5;
+
+// Static layout for the Hospital Guide (design feedback: a visual, pannable/zoomable map of how
+// the game actually works - reception, then diagnosis, then treatment - grouped by room TYPE
+// (all Consultation Rooms show as one node, however many are actually built) rather than one
+// node per physical room instance. Positions are in a fixed virtual coordinate space; the
+// viewport pans/zooms over it independently of the main game camera.
+const ROOM_TREE_LAYOUT = {
+  reception:          {x:40,  y:260, tier:0},
+  consultation:       {x:260, y:260, tier:1},
+  diagnostic:         {x:520, y:40,  tier:2},
+  cardiogram:         {x:520, y:150, tier:2},
+  scanner:            {x:520, y:260, tier:2},
+  ultrascan:          {x:520, y:370, tier:2},
+  bloodMachine:       {x:520, y:480, tier:2},
+  xray:               {x:520, y:590, tier:2},
+  ward:               {x:520, y:700, tier:2},
+  pharmacy:           {x:800, y:40,  tier:3},
+  treatment:          {x:800, y:130, tier:3},
+  operating:          {x:800, y:220, tier:3},
+  psychiatric:        {x:800, y:310, tier:3},
+  inflation:          {x:800, y:400, tier:3},
+  deflation:          {x:800, y:490, tier:3},
+  dnaFixer:           {x:800, y:580, tier:3},
+  hairRestoration:    {x:1030,y:40,  tier:3},
+  slackTongueClinic:  {x:1030,y:130, tier:3},
+  fractureClinic:     {x:1030,y:220, tier:3},
+  electrolysis:       {x:1030,y:310, tier:3},
+  jellyVat:           {x:1030,y:400, tier:3},
+  decontamination:    {x:1030,y:490, tier:3},
+  staffroom:          {x:40,  y:820, tier:4},
+  toilets:            {x:190, y:820, tier:4},
+  research:           {x:340, y:820, tier:4},
+  trainingRoom:       {x:490, y:820, tier:4},
+  waitingRoom:        {x:640, y:820, tier:4},
+};
 
 // Isometric projection - identical constants/formula to the validated iso preview.
 const TW = 64, TH = 32;      // tile diamond width/height on screen
@@ -2086,6 +2143,7 @@ class Hospital{
     if(tw<def.minW || th<def.minH) return {ok:false,reason:"Too small"};
     if(tw>def.maxW || th>def.maxH) return {ok:false,reason:"Too large"};
     if(tx<0||ty<0||tx+tw>MAP_W||ty+th>MAP_H) return {ok:false,reason:"Out of bounds"};
+    if(!inHospitalFootprint(tx,ty,tw,th)) return {ok:false,reason:"Outside the hospital grounds"};
     for(const r of this.rooms){
       if(tx < r.x1 && tx+tw > r.x0 && ty < r.y1 && ty+th > r.y0){
         return {ok:false, reason:"Overlaps another room"};
@@ -2148,12 +2206,15 @@ class Hospital{
       _demolishing: false,
       _demolishTimer: 0,
     };
-    // staff capacity scales with the room's actual built footprint for staffed room types,
-    // same idea as the waiting room's seat count - bigger room, more desks/beds, more workers
-    if(ROOM_TYPES[type].needsDoctor || ROOM_TYPES[type].needsReceptionist || ROOM_TYPES[type].needsResearcher){
-      const base = ROOM_TYPES[type].capacity||1;
-      const scaled = Math.max(base, Math.floor((tw*th)/9));
-      room.staffCapacity = Math.min(scaled, 6);
+    // Staff capacity (design feedback: "one room = one staff member" - multiple people sharing
+    // a room, scaled by floor area, was confusing to reason about). The only two exceptions are
+    // inherently multi-person mechanics documented elsewhere: the Operating Theatre's 2-surgeon
+    // team (surgeonsRequired), and the Training Room, which needs a Consultant teaching at
+    // least one student at the same time (needsConsultant).
+    if(ROOM_TYPES[type].needsDoctor || ROOM_TYPES[type].needsReceptionist || ROOM_TYPES[type].needsResearcher || ROOM_TYPES[type].needsConsultant){
+      if(ROOM_TYPES[type].surgeonsRequired>1) room.staffCapacity = 2;
+      else if(ROOM_TYPES[type].needsConsultant) room.staffCapacity = 2;
+      else room.staffCapacity = 1;
     } else {
       room.staffCapacity = ROOM_TYPES[type].capacity||0;
     }
@@ -2849,6 +2910,7 @@ class Game{
     this._buildGrassPattern();
     this.selected = null; // {kind, entity}
     this._staffRoomPickerOpen = null; // staff id whose custom room-picker list is expanded
+    this.followTarget = null; // {kind:'staff'|'patient', id} - camera smoothly tracks this entity each frame, see _updateCameraFollow
     this.buildMode = null; // {type}
     this.hireMode = null; // {staffId} - awaiting a tap on a room to place a freshly-hired staff member
     this._speedBeforeHireMode = null; // {paused,speedMult} snapshot to restore once hireMode resolves
@@ -2924,13 +2986,11 @@ class Game{
     this.speedMult = 1;
 
     this._refreshBuildList();
-    // A starter reception, consultation room, and pharmacy are already in place near the
-    // entrance - covers the most common early diseases, so the player isn't staring at a
-    // totally blank map on day one. Still unstaffed, still paused, still waiting on ▶.
-    this.hospital.addRoom("reception", 9, 11, 4, 4, "south");
-    this.hospital.addRoom("consultation", 14, 11, 4, 4, "south");
-    this.hospital.addRoom("pharmacy", 19, 11, 4, 4, "south");
-    this.pushToast("Welcome! Hire some staff for your starter rooms, then press ▶ when ready.", "good");
+    // The hospital starts genuinely empty (design feedback: pre-placed starter rooms took away
+    // the very first decision of the game) - the player picks where everything goes from
+    // scratch, within the T-shaped grounds (see HOSPITAL_BAR/HOSPITAL_STEM), starting from
+    // nothing but the entrance.
+    this.pushToast("Welcome! Build a Reception first, then hire staff. Press ▶ when ready.", "good");
     this.save();
   }
 
@@ -2986,7 +3046,7 @@ class Game{
       day:this.day, simTime:this.simTime,
       rooms:this.hospital.rooms.map(r=>({id:r.id,type:r.type,x:r.x,y:r.y,w:r.w,h:r.h,level:r.level,doorSide:r.doorSide,patientsServed:r.patientsServed,condition:r.condition,machineDurability:r.machineDurability,machineBroken:r.machineBroken,_constructing:r._constructing,_constructionTimer:r._constructionTimer,_demolishing:r._demolishing,_demolishTimer:r._demolishTimer,lastServedAt:r.lastServedAt})),
       staff:this.staff.map(s=>({id:s.id,type:s.type,name:s.name,x:s.x,y:s.y,skill:s.skill,skillPoints:s.skillPoints,specialty:s.specialty,energy:s.energy,assignedRoomId:s.assignedRoomId,thirst:s.thirst,pendingHire:s.pendingHire,pendingHireTimer:s.pendingHireTimer})),
-      patients:this.patients.map(p=>({id:p.id,name:p.name,age:p.age,diseaseKey:p.diseaseKey,health:p.health,happiness:p.happiness,x:p.x,y:p.y,state:p.state,diagnosisProgress:p.diagnosisProgress,thirst:p.thirst,isEmergency:p.isEmergency}))
+      patients:this.patients.map(p=>({id:p.id,name:p.name,age:p.age,diseaseKey:p.diseaseKey,health:p.health,happiness:p.happiness,x:p.x,y:p.y,state:p.state,diagnosisProgress:p.diagnosisProgress,thirst:p.thirst,isEmergency:p.isEmergency,diagnosed:p.diagnosed,diagnosisConfidence:p.diagnosisConfidence,diagnosisAttempts:p.diagnosisAttempts,milkedCount:p.milkedCount}))
     };
   }
   _deserialize(data){
@@ -3051,9 +3111,45 @@ class Game{
       const pat = new Patient(this.hospital, p.diseaseKey);
       pat.id=p.id; pat.name=p.name; pat.age=p.age; pat.health=p.health; pat.happiness=p.happiness;
       pat.diagnosisProgress = p.diagnosisProgress||0;
+      pat.diagnosisAttempts = p.diagnosisAttempts||0;
+      pat.milkedCount = p.milkedCount||0;
+      pat.diagnosed = !!p.diagnosed;
+      pat.diagnosisConfidence = p.diagnosisConfidence!=null ? p.diagnosisConfidence : 1;
       pat.thirst = p.thirst||0;
       pat.isEmergency = !!p.isEmergency;
-      pat.x=p.x; pat.y=p.y; pat.state="arriving";
+      pat.x=p.x; pat.y=p.y;
+      // Resume from roughly where they were instead of restarting the whole visit (design
+      // feedback: everyone used to get forced back to "arriving" -> reception on every reload,
+      // even a patient who'd already been fully diagnosed and was on their way to be cured).
+      // Precise mid-animation states (which exact queue slot, mid-walk position, etc.) aren't
+      // worth reconstructing - room queues themselves aren't persisted - so this resumes at the
+      // nearest sensible checkpoint: already-diagnosed patients head straight for their
+      // treatment room; anyone who'd made diagnostic progress (or already failed an attempt)
+      // goes back to the GP rather than re-registering at reception; a patient saved before
+      // ever making any progress just starts the visit over, same as before.
+      if(pat.diagnosed){
+        const target = this.hospital.roomsOfType(pat.disease.room)[0];
+        if(target){
+          pat.targetRoomId = target.id;
+          const door = this.hospital.doorWorld(target);
+          pat.setPathToTile(this.hospital, Math.floor(door.x/TILE), Math.floor(door.y/TILE));
+          pat.state = "toTreatment";
+        } else {
+          pat.state = "arriving"; // their treatment room got demolished while the game was closed
+        }
+      } else if(pat.diagnosisProgress>0 || pat.diagnosisAttempts>0){
+        const con = this.hospital.roomsOfType("consultation")[0];
+        if(con){
+          pat.targetRoomId = con.id;
+          const door = this.hospital.doorWorld(con);
+          pat.setPathToTile(this.hospital, Math.floor(door.x/TILE), Math.floor(door.y/TILE));
+          pat.state = "toConsult";
+        } else {
+          pat.state = "arriving";
+        }
+      } else {
+        pat.state = "arriving";
+      }
       this.patients.push(pat);
     });
     this._refreshBuildList();
@@ -3094,12 +3190,66 @@ class Game{
   }
 
   /* ---------------- toasts ---------------- */
+  // Replaces the old one-at-a-time fading toast popups with a persistent horizontal ticker
+  // banner (design feedback: toasts took up real screen space and disappeared before you could
+  // read them all). Every message is kept in messageHistory (tap the banner to see the full
+  // log); the banner itself shows them one after another, each scrolling right-to-left, picking
+  // up the next queued message as soon as the current one finishes.
   pushToast(text, cls){
-    const el = document.createElement("div");
-    el.className = "toast"+(cls?(" "+cls):"");
-    el.textContent = text;
-    document.getElementById("notifications").appendChild(el);
-    setTimeout(()=>{ el.remove(); }, 4000);
+    const entry = { text, cls: cls||"", t: this.simTime||0 };
+    this.messageHistory = this.messageHistory || [];
+    this.messageHistory.unshift(entry);
+    if(this.messageHistory.length>200) this.messageHistory.pop();
+    this._bannerQueue = this._bannerQueue || [];
+    this._bannerQueue.push(entry);
+    // If messages are arriving faster than the banner can scroll through them (a chaotic
+    // moment with lots of alerts), don't make the player sit through a huge backlog just to
+    // see what's happening right now - drop the oldest still-queued ones. They're never lost:
+    // messageHistory (the full tappable log) keeps everything regardless.
+    if(this._bannerQueue.length>15) this._bannerQueue.splice(0, this._bannerQueue.length-15);
+    this._advanceBanner();
+  }
+  _advanceBanner(){
+    const banner = document.getElementById("msgBanner");
+    const track = document.getElementById("msgBannerTrack");
+    if(!banner || !track) return;
+    if(this._bannerAnimating) return; // still showing one - animationend will call this again
+    const next = (this._bannerQueue||[]).shift();
+    if(!next){ banner.classList.remove("show"); return; }
+    this._bannerAnimating = true;
+    banner.classList.add("show");
+    track.innerHTML = "";
+    const span = document.createElement("span");
+    span.className = next.cls==="bad"?"msgBad":next.cls==="good"?"msgGood":"";
+    span.textContent = next.text;
+    track.appendChild(span);
+    track.classList.remove("scrolling");
+    void track.offsetWidth; // force reflow so re-adding the class restarts the CSS animation
+    // duration scales gently with message length, so short messages don't flash by unreadably
+    // and long ones don't crawl on forever
+    const duration = clamp(next.text.length*0.09 + 3, 4, 11);
+    track.style.animationDuration = duration+"s";
+    track.classList.add("scrolling");
+  }
+  // Full scrollable log of every message this session, newest first - opened by tapping the
+  // ticker banner. Colors match the banner/old toast convention (good=green, bad=red).
+  _openMsgHistory(){
+    const list = document.getElementById("msgHistoryList");
+    list.innerHTML = "";
+    const hist = this.messageHistory || [];
+    if(hist.length===0){
+      list.innerHTML = '<div style="font-size:11.5px;color:#999;padding:14px 4px;text-align:center;">No messages yet.</div>';
+    } else {
+      hist.forEach(entry=>{
+        const secondsAgo = Math.max(0, (this.simTime||0) - entry.t);
+        const row = document.createElement("div");
+        row.className="statRow";
+        const color = entry.cls==="bad" ? "var(--danger)" : entry.cls==="good" ? "var(--leaf)" : "var(--ink)";
+        row.innerHTML = `<span class="label">${this._formatAgo(secondsAgo)}</span><b style="color:${color};flex:1;">${entry.text}</b>`;
+        list.appendChild(row);
+      });
+    }
+    document.getElementById("panelMsgHistory").classList.add("show");
   }
 
   // In-app replacement for window.confirm() - native browser dialogs are frequently blocked or
@@ -3189,6 +3339,10 @@ class Game{
         this.camera.y -= dy/this.camera.zoom;
         this.camera.clampToMap(this.canvas);
         lastPanX=clientX; lastPanY=clientY;
+        // Manually panning breaks the camera out of follow mode (design feedback: following a
+        // moving patient/staff member is great, but the player still needs to be able to look
+        // around freely without fighting the camera snapping back every frame).
+        if(this.followTarget) this.followTarget = null;
       } else if(dragMode==="build"){
         const {tx,ty} = getTilePos(clientX, clientY);
         if(this.buildDrag){ this.buildDrag.cx=tx; this.buildDrag.cy=ty; }
@@ -3315,6 +3469,7 @@ class Game{
     // (Build, Furniture, Staff, etc.), so a stray tap in the play area closes it the way a
     // click-outside-to-dismiss normally works, rather than requiring the explicit ✕.
     this.closeAllPanels();
+    this.followTarget = null;
   }
 
   /* ---------------- furniture placement ---------------- */
@@ -3474,20 +3629,46 @@ class Game{
 
     document.getElementById("btnBuild").addEventListener("click", ()=>this.togglePanel("panelBuild","btnBuild"));
     document.getElementById("btnFurniture").addEventListener("click", ()=>this.togglePanel("panelFurniture","btnFurniture"));
-    document.getElementById("btnStaff").addEventListener("click", ()=>{ this._refreshStaffRoster(); this.togglePanel("panelStaffHire","btnStaff"); });
-    document.getElementById("btnPatients").addEventListener("click", ()=>{ this._refreshPatientsRoster(); this.togglePanel("panelPatientsList","btnPatients"); });
+    document.getElementById("btnDirectory").addEventListener("click", ()=>{ this._refreshDirectoryActivePane(); this.togglePanel("panelDirectory","btnDirectory"); });
+    document.getElementById("btnRoomTree").addEventListener("click", ()=>{ this.togglePanel("panelRoomTree","btnRoomTree"); if(document.getElementById("panelRoomTree").classList.contains("show")) this._openRoomTree(); });
+    this._setupRoomTreePanZoom();
+    // Top-level Directory tabs (design feedback: one general window with Staff/Patients/Rooms
+    // tabs, instead of separate buttons for each) - each just shows/hides its pane and refreshes it.
+    const dirTabs = { dirTabStaff:"dirPaneStaff", dirTabPatients:"dirPanePatients", dirTabRooms:"dirPaneRooms" };
+    Object.keys(dirTabs).forEach(tabId=>{
+      document.getElementById(tabId).addEventListener("click", ()=>{
+        Object.keys(dirTabs).forEach(t=>{
+          document.getElementById(t).classList.toggle("active", t===tabId);
+          document.getElementById(dirTabs[t]).style.display = t===tabId ? "" : "none";
+        });
+        this._directoryActiveTab = tabId;
+        this._refreshDirectoryActivePane();
+      });
+    });
     document.getElementById("staffSubTabHire").addEventListener("click", ()=>{
       document.getElementById("staffSubTabHire").classList.add("active");
       document.getElementById("staffSubTabRoster").classList.remove("active");
       document.getElementById("hireList").style.display="";
-      document.getElementById("staffRosterList").style.display="none";
+      document.getElementById("staffRosterWrap").style.display="none";
     });
     document.getElementById("staffSubTabRoster").addEventListener("click", ()=>{
       document.getElementById("staffSubTabRoster").classList.add("active");
       document.getElementById("staffSubTabHire").classList.remove("active");
       document.getElementById("hireList").style.display="none";
-      document.getElementById("staffRosterList").style.display="";
+      document.getElementById("staffRosterWrap").style.display="";
       this._refreshStaffRoster();
+    });
+    document.getElementById("staffSortSelect").addEventListener("change", (e)=>{
+      this._staffSortKey = e.target.value;
+      this._refreshStaffRoster();
+    });
+    document.getElementById("patientSortSelect").addEventListener("change", (e)=>{
+      this._patientSortKey = e.target.value;
+      this._refreshPatientsRoster();
+    });
+    document.getElementById("roomSortSelect").addEventListener("change", (e)=>{
+      this._roomSortKey = e.target.value;
+      this._refreshRoomsRoster();
     });
     document.getElementById("btnManage").addEventListener("click", ()=>{ this._refreshManagePanel(); this.togglePanel("panelManage","btnManage"); });
     document.getElementById("btnResearch").addEventListener("click", ()=>{ this._refreshResearchPanel(); this.togglePanel("panelResearchTree","btnResearch"); });
@@ -3532,6 +3713,9 @@ class Game{
     document.querySelectorAll(".closeX").forEach(btn=>{
       btn.addEventListener("click", ()=>{
         document.getElementById(btn.dataset.close).classList.remove("show");
+        // Closing the selection detail panel also releases the camera, so it doesn't keep
+        // silently chasing someone with no panel open to explain why.
+        if(btn.dataset.close==="panelSelection") this.followTarget = null;
       });
     });
 
@@ -3539,6 +3723,11 @@ class Game{
     document.getElementById("bcConfirm").addEventListener("click", ()=>this.confirmBuild());
     document.getElementById("fpCancel").addEventListener("click", ()=>this.cancelPlaceMode());
     document.getElementById("hpCancel").addEventListener("click", ()=>this.cancelHireMode());
+    document.getElementById("msgBanner").addEventListener("click", ()=>this._openMsgHistory());
+    document.getElementById("msgBannerTrack").addEventListener("animationend", ()=>{
+      this._bannerAnimating = false;
+      this._advanceBanner();
+    });
     document.getElementById("cancelModeBtn").addEventListener("click", ()=>{
       if(this.buildMode) this.cancelBuild();
       if(this.placeMode) this.cancelPlaceMode();
@@ -3887,30 +4076,41 @@ class Game{
       list.innerHTML = '<div style="font-size:11.5px;color:#999;padding:14px 4px;text-align:center;">No staff hired yet.</div>';
       return;
     }
-    const groups = {};
-    this.staff.forEach(s=>{
-      const key = s.type;
-      (groups[key] = groups[key]||[]).push(s);
-    });
-    Object.keys(STAFF_TYPES).forEach(type=>{
-      const members = groups[type];
-      if(!members || !members.length) return;
-      const label = document.createElement("div");
-      label.className="entityListLabel"; label.textContent = STAFF_TYPES[type].name+" ("+members.length+")";
-      list.appendChild(label);
-      members.forEach(s=>{
-        const room = this.hospital.rooms.find(r=>r.id===s.assignedRoomId);
-        const row = document.createElement("div");
-        row.className="entityRow";
-        row.innerHTML = `<span class="ic">${s.def.symbol}</span><span class="nm">${s.name}${s.specialty?" · "+s.specialty[0].toUpperCase()+s.specialty.slice(1):""}</span><span class="st">${room? ROOM_TYPES[room.type].name : this._staffStateLabel(s.state)}</span>`;
-        row.addEventListener("click", ()=>{ this.closeAllPanels(); this._openSelection({kind:"staff", entity:s}); });
-        list.appendChild(row);
+    const sortKey = this._staffSortKey || "role";
+    const rowFor = (s)=>{
+      const room = this.hospital.rooms.find(r=>r.id===s.assignedRoomId);
+      const row = document.createElement("div");
+      row.className="entityRow";
+      row.innerHTML = `<span class="ic">${s.def.symbol}</span><span class="nm">${s.name}${s.specialty?" · "+s.specialty[0].toUpperCase()+s.specialty.slice(1):""}</span><span class="st">${room? ROOM_TYPES[room.type].name : this._staffStateLabel(s.state)}</span>`;
+      row.addEventListener("click", ()=>{ this.closeAllPanels(); this._openSelection({kind:"staff", entity:s}); });
+      return row;
+    };
+    if(sortKey==="role"){
+      // grouped by role, as before - this is the one case where a group header makes sense
+      const groups = {};
+      this.staff.forEach(s=>{ (groups[s.type] = groups[s.type]||[]).push(s); });
+      Object.keys(STAFF_TYPES).forEach(type=>{
+        const members = groups[type];
+        if(!members || !members.length) return;
+        const label = document.createElement("div");
+        label.className="entityListLabel"; label.textContent = STAFF_TYPES[type].name+" ("+members.length+")";
+        list.appendChild(label);
+        members.forEach(s=> list.appendChild(rowFor(s)));
       });
-    });
+    } else {
+      // flat, sorted list for every other sort mode
+      const sorted = [...this.staff];
+      if(sortKey==="name") sorted.sort((a,b)=>a.name.localeCompare(b.name));
+      else if(sortKey==="energy") sorted.sort((a,b)=>a.energy-b.energy); // most tired first - who needs a rest
+      else if(sortKey==="thirst") sorted.sort((a,b)=>(b.thirst||0)-(a.thirst||0)); // thirstiest first
+      else if(sortKey==="skill") sorted.sort((a,b)=>b.skillPoints-a.skillPoints); // most skilled first
+      sorted.forEach(s=> list.appendChild(rowFor(s)));
+    }
   }
 
-  // Full patient roster, grouped by what stage of care they're at so it's scannable at a
-  // glance (who's waiting vs. being seen vs. on their way out).
+  // Full patient roster, sortable so a specific problem patient (the one an alert mentioned,
+  // e.g. "X patients are unhappy and may leave") is actually easy to find instead of scanning
+  // a long unordered list.
   _refreshPatientsRoster(){
     const list = document.getElementById("patientsRosterList");
     if(!list) return;
@@ -3928,14 +4128,199 @@ class Game{
       if(p.state && p.state.startsWith("queue")) return "waiting";
       return "walking in";
     };
-    visible.sort((a,b)=> (a.happiness??100) - (b.happiness??100)); // most unhappy first - the ones who need attention
-    visible.forEach(p=>{
+    const sortKey = this._patientSortKey || "mood";
+    const sorted = [...visible];
+    if(sortKey==="mood") sorted.sort((a,b)=> (a.happiness??100) - (b.happiness??100));
+    else if(sortKey==="health") sorted.sort((a,b)=> (a.health??100) - (b.health??100));
+    else if(sortKey==="thirst") sorted.sort((a,b)=> (b.thirst||0) - (a.thirst||0));
+    else if(sortKey==="name") sorted.sort((a,b)=> a.name.localeCompare(b.name));
+    else if(sortKey==="disease") sorted.sort((a,b)=> a.disease.name.localeCompare(b.disease.name));
+    else if(sortKey==="stage") sorted.sort((a,b)=> stageLabel(a).localeCompare(stageLabel(b)));
+    sorted.forEach(p=>{
       const row = document.createElement("div");
-      row.className="entityRow";
+      // Emergency patients get a distinct highlighted row (design feedback: hard to spot which
+      // patient an "X patients are unhappy" alert is even talking about) - pairs with the
+      // pulsing marker drawn over them on the map itself, see _drawPatient.
+      row.className="entityRow"+(p.isEmergency?" emergencyRow":"");
       const emergencyTag = p.isEmergency ? " 🚨" : "";
       row.innerHTML = `<span class="ic">${p.disease.symptom}</span><span class="nm">${p.name}${emergencyTag}</span><span class="st">${stageLabel(p)}</span>`;
       row.addEventListener("click", ()=>{ this.closeAllPanels(); this._openSelection({kind:"patient", entity:p}); });
       list.appendChild(row);
+    });
+  }
+
+  // Only the currently-visible Directory tab's pane gets refreshed - avoids doing all three
+  // roster rebuilds every ~0.2s live-refresh tick when only one is actually on screen.
+  _refreshDirectoryActivePane(){
+    const tab = this._directoryActiveTab || "dirTabStaff";
+    if(tab==="dirTabStaff") this._refreshStaffRoster();
+    else if(tab==="dirTabPatients") this._refreshPatientsRoster();
+    else if(tab==="dirTabRooms") this._refreshRoomsRoster();
+  }
+
+  // Rooms tab of the Directory (design feedback: "a list of built rooms with simple stats -
+  // health/condition, occupancy, waiting list, last seen - something simple but very visual").
+  // Each row is a compact card: name + queue badge, a colored condition bar, and a one-line
+  // summary of staffing and how long it's been since a patient was actually served there.
+  _refreshRoomsRoster(){
+    const list = document.getElementById("roomsRosterList");
+    if(!list) return;
+    list.innerHTML = "";
+    const rooms = this.hospital.rooms;
+    if(rooms.length===0){
+      list.innerHTML = '<div style="font-size:11.5px;color:#999;padding:14px 4px;text-align:center;">No rooms built yet.</div>';
+      return;
+    }
+    const hoursPerSimSecond = 24/this.dayLength;
+    const lastSeenHours = (r)=> r.lastServedAt==null ? Infinity : (this.simTime-r.lastServedAt)*hoursPerSimSecond;
+    const sortKey = this._roomSortKey || "queue";
+    const sorted = [...rooms];
+    if(sortKey==="queue") sorted.sort((a,b)=> (b.queue?.length||0) - (a.queue?.length||0));
+    else if(sortKey==="condition") sorted.sort((a,b)=> (a.condition??100) - (b.condition??100));
+    else if(sortKey==="name") sorted.sort((a,b)=> ROOM_TYPES[a.type].name.localeCompare(ROOM_TYPES[b.type].name));
+    else if(sortKey==="lastSeen") sorted.sort((a,b)=> lastSeenHours(b) - lastSeenHours(a));
+    sorted.forEach(r=>{
+      const def = ROOM_TYPES[r.type];
+      const card = document.createElement("div");
+      card.className = "roomRosterCard";
+      if(r._constructing || r._demolishing){
+        card.innerHTML = `
+          <div class="roomRosterHead"><b>${def.name}</b><span class="roomRosterBadge">${r._constructing? "🚧 building":"🧱 demolishing"}</span></div>
+        `;
+      } else {
+        const cond = Math.round(r.condition==null?100:r.condition);
+        const condColor = cond<40? "var(--danger)" : cond<70? "var(--gold)" : "var(--leaf)";
+        const cap = r.staffCapacity!=null ? r.staffCapacity : (def.capacity||0);
+        const staffed = r.staffIds.length;
+        const queueLen = r.queue? r.queue.length : 0;
+        const queueColor = queueLen>=5? "var(--danger)" : queueLen>=2? "var(--gold)" : "#888";
+        const lastSeenText = r.lastServedAt==null
+          ? (r.patientsServed>0 ? "-" : "Never")
+          : Math.round(lastSeenHours(r))+"h ago";
+        const staffedText = def.category==="facility" && r.type!=="reception" && r.type!=="waitingRoom"
+          ? "" // toilets/staffroom/etc don't have a dedicated worker in the same sense
+          : (cap>0 ? `${staffed}/${cap} staffed` : "");
+        card.innerHTML = `
+          <div class="roomRosterHead"><b>${def.name}</b><span class="roomRosterBadge" style="color:${queueColor};">${queueLen>0?"⏳ "+queueLen+" waiting":"no queue"}</span></div>
+          <div class="barTrack"><div class="barFill" style="width:${cond}%;background:${condColor}"></div></div>
+          <div class="roomRosterMeta">${staffedText}${staffedText?" · ":""}Last patient: ${lastSeenText}${r.machineBroken?" · ⚠ machine broken":""}</div>
+        `;
+      }
+      card.addEventListener("click", ()=>{ this.closeAllPanels(); this._openRoomInfo(r); });
+      list.appendChild(card);
+    });
+  }
+
+  // One-time pointer/wheel setup for the Hospital Guide's pan/zoom viewport - independent of
+  // the main game camera, so browsing the guide never nudges the actual map view.
+  _setupRoomTreePanZoom(){
+    this._treeView = { x:0, y:0, zoom:0.85 };
+    const viewport = document.getElementById("roomTreeViewport");
+    if(!viewport) return;
+    const pointers = new Map();
+    let lastPanX=0, lastPanY=0, pinchStartDist=0, pinchStartZoom=1, mode=null;
+    const onDown = (id,x,y)=>{
+      pointers.set(id,{x,y});
+      if(pointers.size===1){ mode="pan"; lastPanX=x; lastPanY=y; }
+      else if(pointers.size===2){
+        mode="pinch";
+        const pts=[...pointers.values()];
+        pinchStartDist = Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y);
+        pinchStartZoom = this._treeView.zoom;
+      }
+    };
+    const onMoveP = (id,x,y)=>{
+      if(!pointers.has(id)) return;
+      pointers.set(id,{x,y});
+      if(mode==="pan" && pointers.size===1){
+        this._treeView.x += x-lastPanX;
+        this._treeView.y += y-lastPanY;
+        lastPanX=x; lastPanY=y;
+        this._applyTreeTransform();
+      } else if(mode==="pinch" && pointers.size>=2){
+        const pts=[...pointers.values()];
+        const d = Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y);
+        if(pinchStartDist>0){
+          this._treeView.zoom = clamp(pinchStartZoom*(d/pinchStartDist), 0.35, 2.2);
+          this._applyTreeTransform();
+        }
+      }
+    };
+    const onUp = (id)=>{ pointers.delete(id); if(pointers.size===0) mode=null; };
+    viewport.addEventListener("pointerdown", e=>{ viewport.setPointerCapture(e.pointerId); onDown(e.pointerId, e.clientX, e.clientY); });
+    viewport.addEventListener("pointermove", e=>onMoveP(e.pointerId, e.clientX, e.clientY));
+    viewport.addEventListener("pointerup", e=>onUp(e.pointerId));
+    viewport.addEventListener("pointercancel", e=>onUp(e.pointerId));
+    viewport.addEventListener("wheel", e=>{
+      e.preventDefault();
+      this._treeView.zoom = clamp(this._treeView.zoom * (e.deltaY<0?1.1:0.9), 0.35, 2.2);
+      this._applyTreeTransform();
+    }, {passive:false});
+  }
+  _applyTreeTransform(){
+    const inner = document.getElementById("roomTreeInner");
+    if(!inner) return;
+    const v = this._treeView;
+    inner.style.transform = `translate(${v.x}px,${v.y}px) scale(${v.zoom})`;
+  }
+  // Centers the view on Reception/Consultation (the natural starting point of the flow) every
+  // time the guide is opened, and redraws it against the hospital's current state.
+  _openRoomTree(){
+    const viewport = document.getElementById("roomTreeViewport");
+    this._treeView = { x: (viewport?viewport.clientWidth/2:150) - 260*0.85, y: (viewport?viewport.clientHeight/2:150) - 260*0.85, zoom:0.85 };
+    this._applyTreeTransform();
+    this._renderRoomTree();
+  }
+  // Redraws every node + connecting line in the Hospital Guide. Rooms are grouped by TYPE (one
+  // node per type, however many physical instances exist) and colored by how congested that
+  // type is right now - the whole point being a quick "what should I build next?" glance:
+  // gray = not built yet, green = quiet, orange = getting busy, red = overloaded.
+  _renderRoomTree(){
+    const inner = document.getElementById("roomTreeInner");
+    const svg = document.getElementById("roomTreeSvg");
+    if(!inner || !svg) return;
+    inner.querySelectorAll(".roomTreeNode").forEach(n=>n.remove());
+
+    const diagnosticOthers = Object.keys(ROOM_TYPES).filter(k=>ROOM_TYPES[k].category==="diagnostic" && k!=="consultation" && ROOM_TREE_LAYOUT[k]);
+    const treatmentLike = Object.keys(ROOM_TYPES).filter(k=>(ROOM_TYPES[k].category==="treatment"||ROOM_TYPES[k].category==="clinic") && ROOM_TREE_LAYOUT[k]);
+    const edges = [["reception","consultation"]];
+    diagnosticOthers.forEach(k=>{ edges.push(["consultation",k]); });
+    treatmentLike.forEach(k=>{ edges.push(["consultation",k]); });
+
+    const NW=120, NH=44; // node box size, must match .roomTreeNode's CSS width + approx height
+    let maxX=0, maxY=0;
+    Object.values(ROOM_TREE_LAYOUT).forEach(p=>{ maxX=Math.max(maxX,p.x+NW); maxY=Math.max(maxY,p.y+NH); });
+    svg.setAttribute("width", maxX+40);
+    svg.setAttribute("height", maxY+40);
+    svg.innerHTML = "";
+    edges.forEach(([a,b])=>{
+      const pa = ROOM_TREE_LAYOUT[a], pb = ROOM_TREE_LAYOUT[b];
+      if(!pa || !pb) return;
+      const line = document.createElementNS("http://www.w3.org/2000/svg","line");
+      line.setAttribute("x1", pa.x+NW/2); line.setAttribute("y1", pa.y+NH);
+      line.setAttribute("x2", pb.x+NW/2); line.setAttribute("y2", pb.y);
+      line.setAttribute("stroke", "#b9c2a8"); line.setAttribute("stroke-width", "2");
+      svg.appendChild(line);
+    });
+
+    Object.keys(ROOM_TREE_LAYOUT).forEach(type=>{
+      const def = ROOM_TYPES[type];
+      if(!def) return;
+      const pos = ROOM_TREE_LAYOUT[type];
+      const instances = this.hospital.roomsOfType(type);
+      const node = document.createElement("div");
+      node.className = "roomTreeNode"+(instances.length===0?" dimmed":"");
+      node.style.left = pos.x+"px"; node.style.top = pos.y+"px"; node.style.width=NW+"px";
+      let borderColor = "#ccc", subText = "Not built";
+      if(instances.length>0){
+        const totalQueue = instances.reduce((s,r)=>s+(r.queue?r.queue.length:0),0);
+        const avgQueue = totalQueue/instances.length;
+        borderColor = avgQueue>=4 ? "#c0473a" : avgQueue>=1.5 ? "#e8b13c" : "#8fbf7a";
+        subText = instances.length+" built"+(totalQueue>0?" · "+totalQueue+" waiting":"");
+      }
+      node.style.borderColor = borderColor;
+      node.innerHTML = `<span class="ttl">${def.name}</span><span class="sub">${subText}</span>`;
+      inner.appendChild(node);
     });
   }
 
@@ -4042,6 +4427,13 @@ class Game{
 
   _openSelection(sel, silent){
     this.selected = sel;
+    // A fresh (non-silent) tap on a patient or staff member locks the camera onto them, so the
+    // player can watch them move through the hospital instead of losing track. Re-opening the
+    // same panel via the live-refresh cycle (silent=true) doesn't re-trigger this, and it's
+    // scoped to staff/patients only - tapping a room never moves the camera.
+    if(!silent && (sel.kind==="staff" || sel.kind==="patient")){
+      this.followTarget = {kind: sel.kind, id: sel.entity.id};
+    }
     if(!silent) this.closeAllPanels();
     const panel = document.getElementById("panelSelection");
     const body = document.getElementById("selBody");
@@ -4077,6 +4469,60 @@ class Game{
         assignInfo.innerHTML = `<span class="label">Assigned to</span><b>No room</b>`;
       }
       body.appendChild(assignInfo);
+
+      // Handyman task queue (design feedback: "if he's called to room A then room B, he should
+      // do A first, and I should be able to see/edit that list"). Shows what he's doing right
+      // now plus anything queued up after it; each queued entry can be removed or promoted to
+      // the front. The current job (repairRoomId/cleaningMessId) isn't itself in _taskQueue -
+      // it's shown separately as "Currently" so the ordering reads top-to-bottom naturally.
+      if(s.type==="maintenance"){
+        const label = document.createElement("div");
+        label.className="entityListLabel"; label.textContent="Task queue";
+        body.appendChild(label);
+        const currentRoom = s.repairRoomId ? this.hospital.rooms.find(r=>r.id===s.repairRoomId) : null;
+        const currentRow = document.createElement("div");
+        currentRow.className="statRow";
+        if(currentRoom){
+          currentRow.innerHTML = `<span class="label">Currently</span><b>🔧 Repairing ${ROOM_TYPES[currentRoom.type].name}</b>`;
+        } else if(s.cleaningMessId){
+          currentRow.innerHTML = `<span class="label">Currently</span><b>🧹 Cleaning up a mess</b>`;
+        } else {
+          currentRow.innerHTML = `<span class="label">Currently</span><b>Free</b>`;
+        }
+        body.appendChild(currentRow);
+        const queue = s._taskQueue || [];
+        if(queue.length===0){
+          const empty = document.createElement("div");
+          empty.style.cssText="font-size:11.5px;color:#999;padding:6px 2px;";
+          empty.textContent = "Nothing queued up next.";
+          body.appendChild(empty);
+        } else {
+          queue.forEach((task, i)=>{
+            const room = this.hospital.rooms.find(r=>r.id===task.roomId);
+            const row = document.createElement("div");
+            row.className="entityRow";
+            row.innerHTML = `<span class="ic">${i+1}</span><span class="nm">${room? ROOM_TYPES[room.type].name : "(room no longer exists)"}</span>`;
+            const upBtn = document.createElement("button");
+            upBtn.className="panelBtn ghost"; upBtn.textContent="↑"; upBtn.style.cssText="min-height:0;padding:4px 10px;";
+            upBtn.disabled = i===0;
+            upBtn.addEventListener("click", (ev)=>{
+              ev.stopPropagation();
+              [queue[i-1], queue[i]] = [queue[i], queue[i-1]];
+              this._openSelection({kind:"staff",entity:s});
+            });
+            const rmBtn = document.createElement("button");
+            rmBtn.className="panelBtn ghost"; rmBtn.textContent="✕"; rmBtn.style.cssText="min-height:0;padding:4px 10px;";
+            rmBtn.addEventListener("click", (ev)=>{
+              ev.stopPropagation();
+              queue.splice(i,1);
+              this._openSelection({kind:"staff",entity:s});
+            });
+            row.appendChild(upBtn); row.appendChild(rmBtn);
+            row.style.cursor = "default";
+            body.appendChild(row);
+          });
+        }
+      }
 
       // room assignment picker - a custom inline list, not a native <select>. Its open/closed
       // state lives on the Game object (this._staffRoomPickerOpen) rather than in the DOM,
@@ -4140,6 +4586,10 @@ class Game{
 
       const fireRow = document.createElement("div");
       fireRow.className="panelBtnRow";
+      const historyBtn = document.createElement("button");
+      historyBtn.className="panelBtn ghost"; historyBtn.textContent="📜 History";
+      historyBtn.addEventListener("click", ()=>this._openHistory(s, s.name));
+      fireRow.appendChild(historyBtn);
       const fireBtn = document.createElement("button");
       fireBtn.className="panelBtn danger"; fireBtn.textContent="Fire";
       fireBtn.addEventListener("click", ()=>{
@@ -4187,8 +4637,51 @@ class Game{
         prioRow.appendChild(prioBtn);
         body.appendChild(prioRow);
       }
+      const histRow = document.createElement("div");
+      histRow.className="panelBtnRow";
+      const histBtn = document.createElement("button");
+      histBtn.className="panelBtn ghost"; histBtn.textContent="📜 History";
+      histBtn.addEventListener("click", ()=>this._openHistory(p, p.name));
+      histRow.appendChild(histBtn);
+      body.appendChild(histRow);
     }
     if(!silent) panel.classList.add("show");
+  }
+
+  // Shows the status-change log built up in _updatePatients/_updateStaff (entity._history) -
+  // design feedback: "I should be able to see a history of status changes for a patient/staff".
+  // Timestamps are shown relative to the current moment ("3m ago") rather than raw simTime,
+  // since that's what's actually meaningful to a player mid-game.
+  _openHistory(entity, name){
+    document.getElementById("historyName").textContent = name;
+    const list = document.getElementById("historyList");
+    list.innerHTML = "";
+    const hist = entity._history || [];
+    if(hist.length===0){
+      list.innerHTML = '<div style="font-size:11.5px;color:#999;padding:14px 4px;text-align:center;">No history yet.</div>';
+    } else {
+      // newest first - the most recent change is the one a player checking in on someone cares
+      // about most
+      [...hist].reverse().forEach(entry=>{
+        const secondsAgo = Math.max(0, this.simTime - entry.t);
+        const row = document.createElement("div");
+        row.className="statRow";
+        row.innerHTML = `<span class="label">${this._formatAgo(secondsAgo)}</span><b>${entry.label}</b>`;
+        list.appendChild(row);
+      });
+    }
+    document.getElementById("panelHistory").classList.add("show");
+  }
+  // Converts a duration in sim-seconds to a short "Xm ago"/"Xh ago"/"just now" label, using the
+  // same real-world-feeling day length the rest of the UI (like the room panel's "last patient"
+  // stat) already converts through.
+  _formatAgo(simSeconds){
+    if(simSeconds<3) return "Just now";
+    const hoursPerSimSecond = 24/this.dayLength;
+    const hours = simSeconds*hoursPerSimSecond;
+    if(hours<1) return Math.round(hours*60)+"m ago";
+    if(hours<48) return Math.round(hours)+"h ago";
+    return Math.round(hours/24)+"d ago";
   }
 
   // Player can't move patients directly (design doc §36), but can reorder the queue they're
@@ -4307,6 +4800,17 @@ class Game{
 
     const btnRow = document.createElement("div");
     btnRow.className="panelBtnRow";
+    // "Call handyman to repair" (design feedback: no direct way to request a repair - had to
+    // wait for a janitor to get around to it on their own priority pass). Only offered when
+    // there's actually something to fix, and reuses the exact same toRepair/repairing staff
+    // states a janitor would use on their own - this just jumps the queue for this one room.
+    if(!room._constructing && !room._demolishing && ((room.condition??100)<100 || room.machineBroken || (room.machineDurability!=null && room.machineDurability<100))){
+      const repairBtn = document.createElement("button");
+      repairBtn.className="panelBtn ghost";
+      repairBtn.textContent = "🔧 Call handyman to repair";
+      repairBtn.addEventListener("click", ()=>{ this.callHandymanTo(room); });
+      btnRow.appendChild(repairBtn);
+    }
     const delBtn = document.createElement("button");
     delBtn.className="panelBtn danger";
     delBtn.textContent = "🗑 Demolish";
@@ -4318,6 +4822,33 @@ class Game{
     btnRow.appendChild(delBtn);
     body.appendChild(btnRow);
     if(!silent) document.getElementById("panelSelection").classList.add("show");
+  }
+
+  // Dispatches an available handyman to repair a specific room right now, instead of waiting
+  // for their own worst-condition-first patrol logic to eventually get to it. Prefers a
+  // genuinely idle handyman; if every handyman is already busy, queues it as their very next
+  // stop once they finish their current job (see the janitor task list, _handymanQueue).
+  callHandymanTo(room){
+    // Maintenance staff don't have a "home desk" (assignedRoomId is null - they roam and
+    // respond to whatever needs doing), so they never actually reach atSlot=true the way a
+    // doctor or nurse would; state==="idle" alone is the correct "free and waiting for a task"
+    // signal for this role.
+    const idleJanitor = this.staff.find(s=>s.type==="maintenance" && s.state==="idle" && !s.repairRoomId && !s.cleaningMessId);
+    if(idleJanitor){
+      idleJanitor.repairRoomId = room.id;
+      idleJanitor.setPathToTile(this.hospital, room.door.x, room.door.y);
+      idleJanitor.state = "toRepair";
+      idleJanitor.atSlot = false;
+      this.pushToast(idleJanitor.name+" is on the way to fix it.", "good");
+      return;
+    }
+    const anyJanitor = this.staff.find(s=>s.type==="maintenance");
+    if(!anyJanitor){ this.pushToast("No handyman hired - hire one from Staff first.", "bad"); return; }
+    // every handyman is busy - add to the front of whichever one's task queue so it's handled
+    // as soon as their current job wraps up (see the janitor task list panel)
+    anyJanitor._taskQueue = anyJanitor._taskQueue || [];
+    anyJanitor._taskQueue.unshift({type:"repair", roomId:room.id});
+    this.pushToast("Every handyman is busy - "+anyJanitor.name+" will head there next.", "good");
   }
 
   deleteRoom(roomId){
@@ -4478,8 +5009,18 @@ class Game{
         this.pushToast("🚨 Emergency handled! +$"+em.reward+" and a reputation boost.", "good");
         this.activeEmergency = null;
       } else if(em.timeLeft <= 0){
-        this.hospitalReputation = clamp(this.hospitalReputation - 6, 0, 100);
-        this.pushToast("🚨 Emergency time limit passed - the bonus reward is lost.", "bad");
+        // Partial credit (design feedback: an all-or-nothing timeout was too punishing and was
+        // the single biggest drain on reputation) - some money and a much gentler reputation
+        // hit for whatever fraction actually got cured in time, instead of losing everything
+        // for finishing at, say, 4/5.
+        const fraction = em.curedCount/em.total;
+        const partialReward = Math.round(em.reward * fraction * 0.5);
+        if(partialReward>0) this.economy.earn(partialReward);
+        const repDelta = em.curedCount>0 ? -1.5 : -3;
+        this.hospitalReputation = clamp(this.hospitalReputation + repDelta, 0, 100);
+        this.pushToast(em.curedCount>0
+          ? ("🚨 Emergency time limit passed - partial credit for "+em.curedCount+"/"+em.total+" treated (+$"+partialReward+").")
+          : "🚨 Emergency time limit passed - the bonus reward is lost.", "bad");
         em.patientIds.forEach(id=>{
           const p = this.patients.find(x=>x.id===id);
           if(p) p.isEmergency = false;
@@ -4490,9 +5031,9 @@ class Game{
     }
     this._emergencyCooldown = (this._emergencyCooldown||0) - dt;
     if(this._emergencyCooldown > 0) return;
-    this._emergencyCooldown = 40 + Math.random()*40; // check roughly every 40-80 sim-seconds
-    if(this.day < 4) return; // give the player a few days to get the basics running first
-    if(Math.random() > 0.35) return; // not every check window actually fires one
+    this._emergencyCooldown = 150 + Math.random()*150; // check roughly every 150-300 sim-seconds (was 40-80, then 70-140 - still firing faster than a small hospital's single-capacity rooms could absorb on top of normal traffic)
+    if(this.day < 6) return; // give the player more time to get the basics running first
+    if(Math.random() > 0.25) return; // not every check window actually fires one
     const recRooms = this.hospital.roomsOfType("reception");
     if(recRooms.length===0 || this.patients.length>14) return;
     // only diseases whose treatment room is actually built AND staffed - an emergency for a
@@ -4504,17 +5045,37 @@ class Game{
     if(!candidates.length) return;
     const diseaseKey = candidates[Math.floor(Math.random()*candidates.length)];
     const disease = DISEASES[diseaseKey];
-    const total = 3 + Math.floor(Math.random()*4); // 3-6 patients
+    // Emergencies represent a known, already-identified incident (a bus crash, a gas leak) -
+    // not a diagnostic mystery, so unlike regular patients these arrive pre-diagnosed and walk
+    // straight to the treatment room, skipping reception/consultation entirely. Previously they
+    // spawned exactly like a normal patient and had to clear the full diagnosis pipeline (GP,
+    // maybe a second diagnostic room) before even reaching a single-capacity treatment room,
+    // all within the time limit - which made most emergencies essentially unwinnable and was
+    // the single biggest drain on hospital reputation (a -6 penalty on every near-guaranteed
+    // timeout). Batch size trimmed slightly too, since a single-capacity room still has to see
+    // everyone one at a time.
+    const total = 3 + Math.floor(Math.random()*2); // 3-4 patients (was 3-6, then 3-5 - even a
+    // diagnosis-free arrival still has to funnel through a single-capacity room one at a time)
+    const targetRoom = this._findAvailableRoomWithStaff(disease.room) || this.hospital.roomsOfType(disease.room)[0];
     const ids = [];
     for(let i=0;i<total;i++){
       const p = new Patient(this.hospital, diseaseKey);
       p.isEmergency = true;
+      p.diagnosed = true;
+      p.diagnosisProgress = disease.diagnosisRequired;
+      p.diagnosisConfidence = 1;
+      if(targetRoom){
+        p.targetRoomId = targetRoom.id;
+        const door = this.hospital.doorWorld(targetRoom);
+        p.setPathToTile(this.hospital, Math.floor(door.x/TILE), Math.floor(door.y/TILE));
+        p.state = "toTreatment";
+      }
       this.patients.push(p);
       ids.push(p.id);
     }
     this.activeEmergency = {
       id: uid(), diseaseKey, total, curedCount:0,
-      timeLeft: 150 + Math.random()*60, timeLimit: 150,
+      timeLeft: 180 + Math.random()*60, timeLimit: 180,
       reward: Math.round(disease.reward * total * 0.9),
       patientIds: ids
     };
@@ -4813,6 +5374,15 @@ class Game{
     for(const p of this.patients){
       p.animT += dt; // was never incremented before - patients stood with frozen legs/arms
       p.stateTimer -= dt;
+      // History log (design feedback: "I should be able to see a history of status changes for
+      // a patient/staff in their details"): whenever their state actually changes this frame,
+      // record it with a human-readable label and a timestamp. Capped so it can't grow forever.
+      if(p.state !== p._lastLoggedState){
+        p._history = p._history || [];
+        p._history.push({ t:this.simTime, label:this._patientStateLabel(p.state) });
+        if(p._history.length>60) p._history.shift();
+        p._lastLoggedState = p.state;
+      }
 
       // health-vs-time (design doc §2): a patient keeps losing health from their disease the
       // whole time they're unwell - queues, corridors, incomplete diagnosis, all of it - not
@@ -4863,14 +5433,16 @@ class Game{
           break;
         }
         case "toReception": {
-          const done = p.updateMovement(dt);
-          if(done){
+          const result = this._advancePatientToRoom(p, dt);
+          if(result==="arrived"){
             const rec = this.hospital.rooms.find(r=>r.id===p.targetRoomId);
             if(rec){
               rec.queue.push(p.id);
               p.queueKind = "queueReception";
               this._tryUseWaitingRoom(p, rec);
             }
+          } else if(result==="stuck"){
+            p.state="leaving"; this._sendToExit(p);
           }
           break;
         }
@@ -4989,14 +5561,16 @@ class Game{
           break;
         }
         case "toConsult": {
-          const done = p.updateMovement(dt);
-          if(done){
+          const result = this._advancePatientToRoom(p, dt);
+          if(result==="arrived"){
             const con = this.hospital.rooms.find(r=>r.id===p.targetRoomId);
             if(con){
               con.queue.push(p.id);
               p.queueKind = "queueConsult";
               this._tryUseWaitingRoom(p, con);
             }
+          } else if(result==="stuck"){
+            p.state="leaving"; this._sendToExit(p);
           }
           break;
         }
@@ -5105,14 +5679,16 @@ class Game{
           break;
         }
         case "toTreatment": {
-          const done = p.updateMovement(dt);
-          if(done){
+          const result = this._advancePatientToRoom(p, dt);
+          if(result==="arrived"){
             const t = this.hospital.rooms.find(r=>r.id===p.targetRoomId);
             if(t){
               t.queue.push(p.id);
               p.queueKind = "queueTreatment";
               this._tryUseWaitingRoom(p, t);
             }
+          } else if(result==="stuck"){
+            p.state="leaving"; this._sendToExit(p);
           }
           break;
         }
@@ -5221,7 +5797,12 @@ class Game{
               this.economy.earn(p.disease.reward);
               this.economy.totalTreated++;
               p.health = 100; p.happiness = clamp(p.happiness+10,0,100);
-              this.hospitalReputation = clamp(this.hospitalReputation+0.6, 0, 100);
+              // Rebalanced (design feedback: reputation was drifting to 0 even in a healthy
+              // hospital): a typical ~70-85% success rate needs the per-cure reward to clearly
+              // outweigh the occasional failure below, or reputation trends down even when
+              // most patients are being cured successfully. +2.2 per cure vs -2.5 per failure
+              // means a hospital succeeding more than ~53% of the time trends upward overall.
+              this.hospitalReputation = clamp(this.hospitalReputation+2.2, 0, 100);
               this._spawnFloatingText(p.x, p.y, "+$"+p.disease.reward, "#4caf50");
               if(p.isEmergency && this.activeEmergency && this.activeEmergency.patientIds.includes(p.id)){
                 this.activeEmergency.curedCount++;
@@ -5234,9 +5815,10 @@ class Game{
               this.economy.totalFailed++;
               p.health -= 20; p.happiness -=20;
               // a failed treatment used to be a pure non-event for the hospital's standing -
-              // now it actually costs reputation, same weight as the design doc's death penalty
-              // scaled down, since a botched treatment is a real, visible failure to patients
-              this.hospitalReputation = clamp(this.hospitalReputation - 4, 0, 100);
+              // now it actually costs reputation, but toned down from the original -4 (paired
+              // with the +2.2 cure reward above, this is what keeps a reasonably-run hospital's
+              // reputation trending upward instead of slowly bleeding to 0 regardless of play).
+              this.hospitalReputation = clamp(this.hospitalReputation - 2.5, 0, 100);
               this.pushToast(p.name+" treatment failed...", "bad");
             }
             p.exitRoomId = t.id;
@@ -5273,6 +5855,11 @@ class Game{
           break;
         }
         case "leaving": {
+          // Same robustness as the other movement legs: if the path to the entrance ever fails
+          // and never recovers, the patient must not become a permanent ghost stuck mid-map -
+          // after enough failed attempts, just let them go (they're already leaving anyway).
+          if(!p.path){ this._sendToExit(p); }
+          if(this._giveUpIfStuck(p)){ p.state="gone"; break; }
           const done = p.updateMovement(dt);
           if(done){ p.state="gone"; }
           break;
@@ -5350,6 +5937,27 @@ class Game{
   // give up gracefully instead of soft-locking the patient in place.
   _giveUpIfStuck(entity){
     return (entity._pathFailStreak||0) > 180;
+  }
+
+  // Generic "walk to my target room's door" robustness for the plain patient movement legs
+  // (toReception/toConsult/toTreatment). These previously called p.updateMovement(dt) directly
+  // with whatever path was set once at the moment they entered the state - if that single
+  // setPathToTile call happened to fail (room briefly unreachable, e.g. through a busy/crowded
+  // layout), the patient was left walking nowhere forever with no retry, eventually dying in
+  // place with no visible cause. This retries the path every frame while it's null (so
+  // _giveUpIfStuck's fail-streak counter actually gets a chance to trip, same idea as the
+  // "errand" state already did) and reports "stuck" so the caller can send them to leave
+  // gracefully instead of freezing.
+  _advancePatientToRoom(p, dt){
+    const room = this.hospital.rooms.find(r=>r.id===p.targetRoomId);
+    if(!room) return "stuck";
+    if(!p.path){
+      const door = this.hospital.doorWorld(room);
+      p.setPathToTile(this.hospital, Math.floor(door.x/TILE), Math.floor(door.y/TILE));
+    }
+    if(this._giveUpIfStuck(p)) return "stuck";
+    if(!p.path) return "waiting";
+    return p.updateMovement(dt) ? "arrived" : "waiting";
   }
 
   // Creates a floor mess at a patient's current position - visible, dents reputation a little,
@@ -5599,6 +6207,13 @@ class Game{
 
   _updateStaff(dt){
     for(const s of this.staff){
+      // History log, same idea as patients above.
+      if(s.state !== s._lastLoggedState){
+        s._history = s._history || [];
+        s._history.push({ t:this.simTime, label:this._staffStateLabel(s.state) });
+        if(s._history.length>60) s._history.shift();
+        s._lastLoggedState = s.state;
+      }
       // thirst (staff, like patients) rises the whole shift; only interrupted from a genuinely
       // idle moment, never mid-treatment or mid-repair
       if(s.state!=="toDrink" && s.state!=="drinking"){
@@ -5656,6 +6271,25 @@ class Game{
           // Janitors prioritize a mess to clean, then a room that needs repair, over their
           // normal desk routine - messes are the more urgent/visible problem.
           if(s.type==="maintenance" && !s.repairRoomId && !s.cleaningMessId){
+            // Explicit task queue (design feedback: no way to see or reorder what a busy
+            // handyman is queued up to do next - "if he's called to room A then room B, he
+            // should do A first"). Player-requested repairs (via the room panel's "Call
+            // handyman" button when everyone was already busy) land at the front of this list;
+            // anything still in it takes priority over the automatic mess/worst-condition scan
+            // below, and it's directly editable from the handyman's own detail panel.
+            if(s._taskQueue && s._taskQueue.length){
+              const task = s._taskQueue.shift();
+              const room = this.hospital.rooms.find(r=>r.id===task.roomId);
+              if(room && (room.machineBroken || (room.condition??100)<100)){
+                s.repairRoomId = room.id;
+                s.setPathToTile(this.hospital, room.door.x, room.door.y);
+                s.state = "toRepair";
+                s.atSlot = false;
+                break;
+              }
+              // room got fixed/demolished/removed by the time we got to it - just fall through
+              // to the normal automatic scan below instead of stalling on a stale task
+            }
             const mess = this.hospital.messes[0];
             if(mess){
               s.cleaningMessId = mess.id;
@@ -5898,7 +6532,24 @@ class Game{
     this.grassPattern = this.ctx.createPattern(c, "repeat");
   }
 
+  // Smoothly moves the camera toward a followed staff/patient each frame (see followTarget,
+  // set by _openSelection on a fresh tap). Lerped rather than snapped so it reads as the camera
+  // tracking them, not jumping every time they take a step; stops gracefully if they've left/
+  // died/been removed since the follow started.
+  _updateCameraFollow(){
+    if(!this.followTarget) return;
+    let entity = null;
+    if(this.followTarget.kind==="staff") entity = this.staff.find(s=>s.id===this.followTarget.id);
+    else if(this.followTarget.kind==="patient") entity = this.patients.find(p=>p.id===this.followTarget.id && p.state!=="gone");
+    if(!entity){ this.followTarget = null; return; }
+    const iso = gridToScreen(entity.x/TILE, entity.y/TILE);
+    const followSpeed = 0.12;
+    this.camera.x += (iso.x - this.camera.x) * followSpeed;
+    this.camera.y += (iso.y - this.camera.y) * followSpeed;
+  }
+
   render(){
+    this._updateCameraFollow();
     const ctx = this.ctx;
     const w = this.canvas.width/DPR, h = this.canvas.height/DPR;
     ctx.clearRect(0,0,w,h);
@@ -6004,6 +6655,11 @@ class Game{
           const def = ROOM_TYPES[room.type];
           const base = ((x+y)%2===0)? def.color : def.darkColor;
           ctx.fillStyle = shadeForCondition(base, room.condition);
+        } else if(!inHospitalFootprint(x,y,1,1)){
+          // Outside the T-shaped hospital grounds entirely (the "cut corners" of the map) -
+          // rendered as exterior grass rather than the interior corridor tint, so the building's
+          // actual footprint (now traced by _pushBoundaryWalls) reads clearly against it.
+          ctx.fillStyle = ((x+y)%2===0)? "#a9c48a" : "#9fb87f";
         } else {
           ctx.fillStyle = ((x+y)%2===0)? "#cfc7ae" : "#bdb59d";
         }
@@ -6077,6 +6733,20 @@ class Game{
   // front of a wall it should be standing behind.
   _buildDepthDrawables(ctx){
     const drawables = [];
+    // Every room's north/west wall is always drawn (that's what lets the camera see inside via
+    // culled south/east walls). For two directly-adjacent rooms sharing a boundary, that means
+    // the "southern"/"eastern" room's near (north/west) wall already covers that exact segment -
+    // so when "Show south/east walls" is on, the "northern"/"western" room must NOT also draw
+    // its far (south/east) wall there, or the two overlap at identical depth and whichever room
+    // happens to be later in the array (i.e. most recently built) wins the render order by pure
+    // chance. Precomputing every near-wall segment up front lets the south/east push functions
+    // below skip a segment a neighboring room already owns - the neighboring room is always the
+    // one actually closer to the camera, matching how a real shared wall should read.
+    const nearWallSegments = new Set();
+    for(const r of this.hospital.rooms){
+      for(let x=r.x0;x<r.x1;x++) nearWallSegments.add("N:"+x+","+r.y0);
+      for(let y=r.y0;y<r.y1;y++) nearWallSegments.add("W:"+r.x0+","+y);
+    }
     const pushNorthRun = (r,a,b,color)=>{
       for(let x=a;x<b;x++) drawables.push({ depth:x+0.5+r.y0, fn:(ctx)=>wallQuad(ctx,x,r.y0,x+1,r.y0,color) });
     };
@@ -6084,12 +6754,19 @@ class Game{
       for(let y=a;y<b;y++) drawables.push({ depth:r.x0+y+0.5, fn:(ctx)=>wallQuad(ctx,r.x0,y,r.x0,y+1,color) });
     };
     // south/east are culled by default (that's what lets the camera see inside rooms), but the
-    // Settings toggle can force them on so the player can see exactly what's normally hidden
+    // Settings toggle can force them on so the player can see exactly what's normally hidden -
+    // each segment is skipped if a neighboring room's near wall already owns it (see above).
     const pushSouthRun = (r,a,b,color)=>{
-      for(let x=a;x<b;x++) drawables.push({ depth:x+0.5+r.y1, fn:(ctx)=>wallQuad(ctx,x,r.y1,x+1,r.y1,color) });
+      for(let x=a;x<b;x++){
+        if(nearWallSegments.has("N:"+x+","+r.y1)) continue;
+        drawables.push({ depth:x+0.5+r.y1, fn:(ctx)=>wallQuad(ctx,x,r.y1,x+1,r.y1,color) });
+      }
     };
     const pushEastRun = (r,a,b,color)=>{
-      for(let y=a;y<b;y++) drawables.push({ depth:r.x1+y+0.5, fn:(ctx)=>wallQuad(ctx,r.x1,y,r.x1,y+1,color) });
+      for(let y=a;y<b;y++){
+        if(nearWallSegments.has("W:"+r.x1+","+y)) continue;
+        drawables.push({ depth:r.x1+y+0.5, fn:(ctx)=>wallQuad(ctx,r.x1,y,r.x1,y+1,color) });
+      }
     };
 
     for(const r of this.hospital.rooms){
@@ -6184,9 +6861,12 @@ class Game{
       drawables.push({ depth: gd, fn:(ctx)=>this._drawStaff(ctx, e) });
     }
 
-    if(!(this.buildMode || this.placeMode)){
-      this._pushBoundaryWalls(drawables);
-    }
+    // The outer shell (and especially the entrance marker) stays visible even while placing a
+    // room or furniture (design feedback: it used to vanish along with the room walls during
+    // build mode, making it impossible to see where the entrance is while deciding where to put
+    // a new room relative to it). Only the *interior* room walls hide during placement, further
+    // up in this function - the boundary is a fixed reference point and should never disappear.
+    this._pushBoundaryWalls(drawables);
 
     return drawables;
   }
@@ -6197,23 +6877,41 @@ class Game{
   _pushBoundaryWalls(drawables){
     const color = "#5f5648";
     const ent = this.hospital.entrance;
-    for(let x=0;x<MAP_W;x++){
-      drawables.push({ depth: x+0.5, fn:(ctx)=>wallQuad(ctx,x,0,x+1,0,color,WALL_H_OUTER) });
+    const BAR = HOSPITAL_BAR, STEM = HOSPITAL_STEM;
+    // North wall (top of the crossbar, full width)
+    for(let x=BAR.x0;x<BAR.x1;x++){
+      drawables.push({ depth: x+0.5+BAR.y0, fn:(ctx)=>wallQuad(ctx,x,BAR.y0,x+1,BAR.y0,color,WALL_H_OUTER) });
     }
-    for(let y=0;y<MAP_H;y++){
-      drawables.push({ depth: y+0.5, fn:(ctx)=>wallQuad(ctx,0,y,0,y+1,color,WALL_H_OUTER) });
+    // West/east walls of the crossbar, down to where the stem branches off
+    for(let y=BAR.y0;y<BAR.y1;y++){
+      drawables.push({ depth: BAR.x0+y+0.5, fn:(ctx)=>wallQuad(ctx,BAR.x0,y,BAR.x0,y+1,color,WALL_H_OUTER) });
     }
-    for(let y=0;y<MAP_H;y++){
-      drawables.push({ depth: MAP_W+y+0.5, fn:(ctx)=>wallQuad(ctx,MAP_W,y,MAP_W,y+1,color,WALL_H_OUTER) });
+    for(let y=BAR.y0;y<BAR.y1;y++){
+      drawables.push({ depth: BAR.x1+y+0.5, fn:(ctx)=>wallQuad(ctx,BAR.x1,y,BAR.x1,y+1,color,WALL_H_OUTER) });
     }
-    for(let x=0;x<MAP_W;x++){
+    // The two "shoulders" - where the crossbar overhangs the narrower stem on each side
+    for(let x=BAR.x0;x<STEM.x0;x++){
+      drawables.push({ depth: x+0.5+BAR.y1, fn:(ctx)=>wallQuad(ctx,x,BAR.y1,x+1,BAR.y1,color,WALL_H_OUTER) });
+    }
+    for(let x=STEM.x1;x<BAR.x1;x++){
+      drawables.push({ depth: x+0.5+BAR.y1, fn:(ctx)=>wallQuad(ctx,x,BAR.y1,x+1,BAR.y1,color,WALL_H_OUTER) });
+    }
+    // West/east walls of the stem, down to the entrance
+    for(let y=STEM.y0;y<STEM.y1;y++){
+      drawables.push({ depth: STEM.x0+y+0.5, fn:(ctx)=>wallQuad(ctx,STEM.x0,y,STEM.x0,y+1,color,WALL_H_OUTER) });
+    }
+    for(let y=STEM.y0;y<STEM.y1;y++){
+      drawables.push({ depth: STEM.x1+y+0.5, fn:(ctx)=>wallQuad(ctx,STEM.x1,y,STEM.x1,y+1,color,WALL_H_OUTER) });
+    }
+    // South wall (bottom of the stem), with the one gap where everyone comes in and out
+    for(let x=STEM.x0;x<STEM.x1;x++){
       if(x>=ent.x0 && x<ent.x1) continue; // the one gap
-      drawables.push({ depth: x+0.5+MAP_H, fn:(ctx)=>wallQuad(ctx,x,MAP_H,x+1,MAP_H,color,WALL_H_OUTER) });
+      drawables.push({ depth: x+0.5+STEM.y1, fn:(ctx)=>wallQuad(ctx,x,STEM.y1,x+1,STEM.y1,color,WALL_H_OUTER) });
     }
-    drawables.push({ depth: (ent.x0+ent.x1)/2+MAP_H, fn:(ctx)=>drawDoorOnWall(ctx,ent.x0,MAP_H,ent.x1,MAP_H,WALL_H_OUTER) });
+    drawables.push({ depth: (ent.x0+ent.x1)/2+STEM.y1, fn:(ctx)=>drawDoorOnWall(ctx,ent.x0,STEM.y1,ent.x1,STEM.y1,WALL_H_OUTER) });
     // small sign above the entrance
-    drawables.push({ depth: (ent.x0+ent.x1)/2+MAP_H+0.5, fn:(ctx)=>{
-      const p = gridToScreen((ent.x0+ent.x1)/2, MAP_H);
+    drawables.push({ depth: (ent.x0+ent.x1)/2+STEM.y1+0.5, fn:(ctx)=>{
+      const p = gridToScreen((ent.x0+ent.x1)/2, STEM.y1);
       ctx.font="16px sans-serif"; ctx.textAlign="center";
       ctx.fillText("🏥", p.x, p.y-WALL_H_OUTER-4);
     }});
@@ -6656,12 +7354,27 @@ class Game{
       });
     }
     const scr = gridToScreen(p.x/TILE, p.y/TILE);
+    // Emergency patients pulse with a glowing ring (design feedback: hard to tell which patient
+    // an "unhappy patients" or emergency alert is even about) - drawn under the character so it
+    // reads as a floor glow rather than obscuring them.
+    if(p.isEmergency){
+      const pulse = 0.5+0.5*Math.sin(p.animT*4);
+      ctx.save();
+      ctx.translate(scr.x, scr.y);
+      ctx.globalAlpha = 0.35+0.35*pulse;
+      ctx.fillStyle = "#e04032";
+      ctx.beginPath();
+      ctx.ellipse(0, -2, 12+pulse*2, 6+pulse, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
     ctx.save();
     ctx.translate(scr.x, scr.y+this._bob(p)-HUMANOID_GROUND_OFFSET);
     let bubble=null;
     if(p.state==="beingConsulted") bubble="❔";
     else if(p.state==="beingTreated") bubble="💉";
     else if(p.state.startsWith("queue")) bubble="⏳";
+    if(p.isEmergency) bubble="🚨"; // takes priority over the state bubble - the emergency status is the more important thing to flag
     if(bubble){ ctx.font="10px sans-serif"; ctx.textAlign="center"; ctx.fillText(bubble, 0, -13); }
     this._drawDiseaseEffect(ctx, p);
     // floating mood bar above patients who are getting upset, so a problem is visible without opening a panel
@@ -6766,8 +7479,8 @@ class Game{
     if(document.getElementById("panelAlerts").classList.contains("show")) this._refreshAlertsPanel();
     if(document.getElementById("panelObjectives").classList.contains("show")) this._refreshObjectives();
     if(document.getElementById("panelPolicy").classList.contains("show")) this._refreshPolicyPanel();
-    if(document.getElementById("panelStaffHire").classList.contains("show") && document.getElementById("staffRosterList").style.display!=="none") this._refreshStaffRoster();
-    if(document.getElementById("panelPatientsList").classList.contains("show")) this._refreshPatientsRoster();
+    if(document.getElementById("panelDirectory").classList.contains("show")) this._refreshDirectoryActivePane();
+    if(document.getElementById("panelRoomTree").classList.contains("show")) this._renderRoomTree();
   }
 
   _refreshPolicyPanel(){
@@ -6799,6 +7512,9 @@ class Game{
    9. BOOTSTRAP
    ========================================================================= */
 window.DPR = Math.min(window.devicePixelRatio||1, DPR_CAP);
+document.querySelectorAll("#versionLabel").forEach(el=>el.textContent="v"+GAME_VERSION);
+const startVersionEl = document.getElementById("startScreenVersion");
+if(startVersionEl) startVersionEl.textContent = "v"+GAME_VERSION;
 const game = new Game();
 game.start();
 

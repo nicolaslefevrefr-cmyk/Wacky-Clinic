@@ -36,6 +36,7 @@
   <p>Build your hospital, treat patients with perfectly absurd diseases, and become the reference in delirious healthcare.</p>
   <button class="menuBtn" id="btnNewGame">New Game</button>
   <button class="menuBtn secondary" id="btnContinue">Continue</button>
+  <div id="startScreenVersion"></div>
 </div>
 
 <div id="ui">
@@ -56,7 +57,15 @@
     <button id="objectivesBtn">🎯 Objectives</button>
   </div>
 
-  <div id="notifications"></div>
+  <div id="msgBanner">
+    <div id="msgBannerTrack"></div>
+  </div>
+
+  <div class="panel" id="panelMsgHistory">
+    <h3>📋 Message History <button class="closeX" data-close="panelMsgHistory">✕</button></h3>
+    <div id="msgHistoryList"></div>
+  </div>
+
 
   <div id="zoomControls">
     <button class="zoomBtn" id="zoomIn">+</button>
@@ -74,19 +83,78 @@
     <div id="furnitureList"></div>
   </div>
 
-  <div class="panel" id="panelStaffHire">
-    <h3>Staff <button class="closeX" data-close="panelStaffHire">✕</button></h3>
-    <div class="subTabs">
-      <button class="subTabBtn active" id="staffSubTabHire">Hire</button>
-      <button class="subTabBtn" id="staffSubTabRoster">Roster (<span id="staffRosterCount">0</span>)</button>
+  <div class="panel" id="panelRoomTree">
+    <h3>🗺 Hospital Guide <button class="closeX" data-close="panelRoomTree">✕</button></h3>
+    <div style="font-size:11px;color:#888;margin-bottom:6px;">Drag to pan, pinch/scroll to zoom. Colors show how busy each room type is right now.</div>
+    <div id="roomTreeViewport">
+      <div id="roomTreeInner">
+        <svg id="roomTreeSvg"></svg>
+      </div>
     </div>
-    <div id="hireList"></div>
-    <div id="staffRosterList" style="display:none;"></div>
+    <div id="roomTreeLegend">
+      <span><i style="background:#8fbf7a;"></i>Quiet</span>
+      <span><i style="background:#e8b13c;"></i>Busy</span>
+      <span><i style="background:#c0473a;"></i>Overloaded</span>
+      <span><i style="background:#ccc;"></i>Not built</span>
+    </div>
   </div>
 
-  <div class="panel" id="panelPatientsList">
-    <h3>Patients <button class="closeX" data-close="panelPatientsList">✕</button></h3>
-    <div id="patientsRosterList"></div>
+  <div class="panel" id="panelDirectory">
+    <h3>Directory <button class="closeX" data-close="panelDirectory">✕</button></h3>
+    <div class="subTabs">
+      <button class="subTabBtn active" id="dirTabStaff">Staff</button>
+      <button class="subTabBtn" id="dirTabPatients">Patients</button>
+      <button class="subTabBtn" id="dirTabRooms">Rooms</button>
+    </div>
+
+    <div id="dirPaneStaff">
+      <div class="subTabs">
+        <button class="subTabBtn active" id="staffSubTabHire">Hire</button>
+        <button class="subTabBtn" id="staffSubTabRoster">Roster (<span id="staffRosterCount">0</span>)</button>
+      </div>
+      <div id="hireList"></div>
+      <div id="staffRosterWrap" style="display:none;">
+        <div class="sortRow">
+          <label for="staffSortSelect">Sort by</label>
+          <select id="staffSortSelect">
+            <option value="role">Role</option>
+            <option value="name">Name</option>
+            <option value="energy">Energy (lowest first)</option>
+            <option value="thirst">Thirst (highest first)</option>
+            <option value="skill">Skill</option>
+          </select>
+        </div>
+        <div id="staffRosterList"></div>
+      </div>
+    </div>
+
+    <div id="dirPanePatients" style="display:none;">
+      <div class="sortRow">
+        <label for="patientSortSelect">Sort by</label>
+        <select id="patientSortSelect">
+          <option value="mood">Mood (unhappiest first)</option>
+          <option value="health">Health (lowest first)</option>
+          <option value="thirst">Thirst (highest first)</option>
+          <option value="name">Name</option>
+          <option value="disease">Disease</option>
+          <option value="stage">Stage</option>
+        </select>
+      </div>
+      <div id="patientsRosterList"></div>
+    </div>
+
+    <div id="dirPaneRooms" style="display:none;">
+      <div class="sortRow">
+        <label for="roomSortSelect">Sort by</label>
+        <select id="roomSortSelect">
+          <option value="queue">Waiting (busiest first)</option>
+          <option value="condition">Condition (worst first)</option>
+          <option value="name">Name</option>
+          <option value="lastSeen">Last patient (longest idle first)</option>
+        </select>
+      </div>
+      <div id="roomsRosterList"></div>
+    </div>
   </div>
 
   <div class="panel" id="panelManage">
@@ -146,6 +214,11 @@
     <div id="selBody"></div>
   </div>
 
+  <div class="panel" id="panelHistory">
+    <h3>📜 <span id="historyName">History</span> <button class="closeX" data-close="panelHistory">✕</button></h3>
+    <div id="historyList"></div>
+  </div>
+
   <div class="panel" id="panelObjectives">
     <h3>Objectives <button class="closeX" data-close="panelObjectives">✕</button></h3>
     <div id="objList"></div>
@@ -165,6 +238,9 @@
     <div class="settingsRow">
       <div><div>Show south/east walls</div><div class="desc">Reveal the normally-hidden near walls, to see what they'd look like</div></div>
       <button class="toggleSwitch on" id="toggleHiddenWalls"></button>
+    </div>
+    <div class="settingsRow" style="border-top:1px solid var(--panel-edge);margin-top:8px;padding-top:12px;">
+      <div><div>Version</div><div class="desc">Wacky Clinic <span id="versionLabel"></span></div></div>
     </div>
   </div>
 
@@ -199,8 +275,8 @@
   <div class="ui-layer" id="hud-bottom">
     <button class="bigBtn" id="btnBuild"><span class="ic">🏗</span>Build</button>
     <button class="bigBtn" id="btnFurniture"><span class="ic">🪑</span>Furniture</button>
-    <button class="bigBtn" id="btnStaff"><span class="ic">👨‍⚕️</span>Staff</button>
-    <button class="bigBtn" id="btnPatients"><span class="ic">🧍</span>Patients</button>
+    <button class="bigBtn" id="btnDirectory"><span class="ic">📋</span>Directory</button>
+    <button class="bigBtn" id="btnRoomTree"><span class="ic">🗺</span>Guide</button>
     <button class="bigBtn" id="btnResearch"><span class="ic">🔬</span>Research</button>
     <button class="bigBtn" id="btnManage"><span class="ic">⚙</span>Manage</button>
   </div>
