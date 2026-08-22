@@ -3,7 +3,7 @@
 // falling back to the network for anything not in the cache, and updating the cache in the
 // background whenever a newer version of a cached file is fetched.
 
-const CACHE_NAME = "wacky-clinic-v5";
+const CACHE_NAME = "wacky-clinic-v6";
 
 // All paths are relative to this file's own location, so this works whether the site is served
 // from a domain root or a GitHub Pages project subpath (e.g. username.github.io/repo-name/).

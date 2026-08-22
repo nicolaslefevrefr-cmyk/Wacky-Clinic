@@ -5,7 +5,7 @@
    0. CONSTANTS
    ========================================================================= */
 const TILE = 32;
-const GAME_VERSION = "1.5.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
+const GAME_VERSION = "1.5.1"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
 const CONSTRUCTION_SECONDS = 5; // how long a build/demolish/hire takes to actually complete (design feedback: shouldn't be instant)
 // Map is sized to comfortably fit a randomly-generated T-shaped hospital footprint (see
 // Hospital._generateShape) in any of its 4 possible orientations, at roughly 50% more total
@@ -2166,12 +2166,21 @@ class Hospital{
     if(bar.y1===stem.y0 || bar.y0===stem.y1){ // stacked vertically
       const topIsBar = bar.y1===stem.y0;
       const topRect = topIsBar? bar: stem, bottomRect = topIsBar? stem: bar;
+      // Bug fix: this used to only check the CROSS dimension (x) depending on which vertical
+      // band a tile fell in, but never checked that the tile stayed within the shape's actual
+      // top/bottom extent. Since the stem's length is now randomized and often doesn't reach
+      // all the way to the map edge, the leftover "dead space" past the stem's real end was
+      // incorrectly treated as inside the footprint - floor tiles (and therefore the corridor
+      // color) extended past where the walls actually were, and the grass ring around the
+      // building shrank accordingly. Explicitly bounding the outer edges here fixes both.
+      if(y0 < topRect.y0 || y1 > bottomRect.y1) return false;
       if(y1 > topRect.y1){ if(x0<bottomRect.x0||x1>bottomRect.x1) return false; }
       if(y0 < topRect.y1){ if(x0<topRect.x0||x1>topRect.x1) return false; }
       return true;
     } else { // side by side horizontally
       const leftIsBar = bar.x1===stem.x0;
       const leftRect = leftIsBar? bar: stem, rightRect = leftIsBar? stem: bar;
+      if(x0 < leftRect.x0 || x1 > rightRect.x1) return false; // same fix, other axis
       if(x1 > leftRect.x1){ if(y0<rightRect.y0||y1>rightRect.y1) return false; }
       if(x0 < leftRect.x1){ if(y0<leftRect.y0||y1>leftRect.y1) return false; }
       return true;
@@ -3794,6 +3803,7 @@ class Game{
         // Closing the selection detail panel also releases the camera, so it doesn't keep
         // silently chasing someone with no panel open to explain why.
         if(btn.dataset.close==="panelSelection") this.followTarget = null;
+        if(btn.dataset.close==="panelHistory") this._historyOpenFor = null;
       });
     });
 
@@ -3934,7 +3944,11 @@ class Game{
     // same state afterward, instead of always landing back on Pause.
     this._speedBeforeHireMode = { paused:this.paused, speedMult:this.speedMult };
     this.paused = true;
-    this._syncPauseOverlay();
+    // The sim logic does pause (nothing changes underneath while placing them), but - same as
+    // dragging out a new room in Build mode, which never shows the overlay either - there's no
+    // dimmed "⏸ PAUSED" screen for this. It's a lightweight hold for placement, not a real pause
+    // the player asked for.
+    document.getElementById("pauseOverlay").classList.remove("show");
     this._syncCancelBtn();
     this.pushToast(st.name+" hired - tap a room to assign them.", "good");
     this.save();
@@ -4384,11 +4398,24 @@ class Game{
     // Two different kinds of edge, styled differently (design feedback: everything after
     // Consultation looked like one flat, undifferentiated level, but the real flow isn't
     // symmetric): diagnostic rooms are a side-loop patients bounce back to Consultation from
-    // (dashed, no strong arrowhead - "you might come back here"), while treatment/clinic rooms
-    // are the one-way final destination once actually diagnosed (solid, arrowhead pointing at
-    // the room - "this is where the visit ends").
+    // (dashed curve, no strong arrowhead - "you might come back here"), while treatment/clinic
+    // rooms are the one-way final destination once actually diagnosed (solid straight line,
+    // arrowhead pointing at the room, "this is where the visit - and the money - ends").
+    // Diagnostic rooms are sorted strongest-first (design feedback: which one's actually
+    // better wasn't clear) so both their vertical position and their loop's curve order read
+    // as a rough "most to least effective" ranking, top to bottom.
+    diagnosticOthers.sort((a,b)=>(ROOM_TYPES[b].diagnosisPower||0)-(ROOM_TYPES[a].diagnosisPower||0));
     const loopEdges = diagnosticOthers.map(k=>["consultation",k]);
     const finalEdges = [["reception","consultation"], ...treatmentLike.map(k=>["consultation",k])];
+
+    // Average payout for each treatment/clinic room, from every disease that's actually cured
+    // there (design feedback: which rooms are the "final", money-making ones wasn't obvious).
+    const avgRewardByRoom = {};
+    Object.values(DISEASES).forEach(d=>{
+      if(!avgRewardByRoom[d.room]) avgRewardByRoom[d.room] = {sum:0,count:0};
+      avgRewardByRoom[d.room].sum += d.reward;
+      avgRewardByRoom[d.room].count++;
+    });
 
     const NW=120, NH=44; // node box size, must match .roomTreeNode's CSS width + approx height
     let maxX=0, maxY=0;
@@ -4409,25 +4436,45 @@ class Game{
     defs.appendChild(marker);
     svg.appendChild(defs);
 
-    // draws a line stopping short of the target node's edge (rather than its exact center) so
-    // the arrowhead lands just outside the box instead of hiding behind it
-    const drawEdge = (a,b,opts)=>{
+    // Straight final-treatment edges: stop just short of the target box so the arrowhead lands
+    // outside it rather than hiding behind it. Anchored to a source-side point that fans out
+    // vertically with the target's own position (design feedback: every line used to leave from
+    // the exact same center point and pile up into an unreadable knot) instead of one dead center.
+    const drawFinalEdge = (a,b,opts,index,total)=>{
       const pa = ROOM_TREE_LAYOUT[a], pb = ROOM_TREE_LAYOUT[b];
       if(!pa || !pb) return;
-      const cax=pa.x+NW/2, cay=pa.y+NH/2, cbx=pb.x+NW/2, cby=pb.y+NH/2;
+      const fanSpread = Math.min(NH*0.7, 16);
+      const startY = pa.y+NH/2 + (total>1 ? (index/(total-1)-0.5)*fanSpread : 0);
+      const cax=pa.x+NW, cay=startY, cbx=pb.x, cby=pb.y+NH/2;
       const dx=cbx-cax, dy=cby-cay, dist=Math.hypot(dx,dy)||1;
-      const pullBack = opts.arrow ? NW*0.42 : 0; // shorten only the arrowed (final) edges
+      const pullBack = 10;
       const ex = cbx-(dx/dist)*pullBack, ey = cby-(dy/dist)*pullBack;
       const line = document.createElementNS("http://www.w3.org/2000/svg","line");
       line.setAttribute("x1", cax); line.setAttribute("y1", cay);
       line.setAttribute("x2", ex); line.setAttribute("y2", ey);
       line.setAttribute("stroke", opts.color); line.setAttribute("stroke-width", opts.width);
-      if(opts.dash) line.setAttribute("stroke-dasharray", opts.dash);
-      if(opts.arrow) line.setAttribute("marker-end", "url(#treeArrow)");
+      line.setAttribute("marker-end", "url(#treeArrow)");
       svg.appendChild(line);
     };
-    loopEdges.forEach(([a,b])=> drawEdge(a,b,{color:"#b9c2a8", width:1.5, dash:"5,4", arrow:false}));
-    finalEdges.forEach(([a,b])=> drawEdge(a,b,{color:"#c98a4a", width:2.5, dash:null, arrow:true}));
+    // Curved loop edges (diagnostic <-> Consultation): a gentle arc, bowing upward more for the
+    // stronger/higher-ranked diagnostic rooms and less for weaker ones, so the bundle fans out
+    // into distinct arcs instead of a pile of overlapping straight lines all along the same path.
+    const drawLoopEdge = (a,b,index,total)=>{
+      const pa = ROOM_TREE_LAYOUT[a], pb = ROOM_TREE_LAYOUT[b];
+      if(!pa || !pb) return;
+      const startY = pa.y+NH*0.3;
+      const x1=pa.x+NW, y1=startY, x2=pb.x, y2=pb.y+NH/2;
+      const bow = 30 + index*22; // each successive loop arcs further out, separating them
+      const midX = (x1+x2)/2, midY = (y1+y2)/2 - bow;
+      const path = document.createElementNS("http://www.w3.org/2000/svg","path");
+      path.setAttribute("d", `M${x1},${y1} Q${midX},${midY} ${x2},${y2}`);
+      path.setAttribute("fill","none");
+      path.setAttribute("stroke","#b9c2a8"); path.setAttribute("stroke-width","1.5");
+      path.setAttribute("stroke-dasharray","5,4");
+      svg.appendChild(path);
+    };
+    loopEdges.forEach(([a,b],i)=> drawLoopEdge(a,b,i,loopEdges.length));
+    finalEdges.forEach(([a,b],i)=> drawFinalEdge(a,b,{color:"#c98a4a", width:2.5},i,finalEdges.length));
 
     Object.keys(ROOM_TREE_LAYOUT).forEach(type=>{
       const def = ROOM_TYPES[type];
@@ -4444,8 +4491,18 @@ class Game{
         borderColor = avgQueue>=4 ? "#c0473a" : avgQueue>=1.5 ? "#e8b13c" : "#8fbf7a";
         subText = instances.length+" built"+(totalQueue>0?" · "+totalQueue+" waiting":"");
       }
+      // Extra badge: diagnostic power for diagnostic-tier rooms (so their relative usefulness
+      // is visible at a glance), or average payout for the "final" treatment/clinic rooms that
+      // actually earn money when a patient is cured there.
+      let badge = "";
+      if(def.category==="diagnostic" && type!=="consultation" && def.diagnosisPower){
+        badge = `<span class="badge">🔬 +${def.diagnosisPower} power</span>`;
+      } else if(avgRewardByRoom[type]){
+        const avg = Math.round(avgRewardByRoom[type].sum/avgRewardByRoom[type].count);
+        badge = `<span class="badge money">💰 ~$${avg}</span>`;
+      }
       node.style.borderColor = borderColor;
-      node.innerHTML = `<span class="ttl">${def.name}</span><span class="sub">${subText}</span><span class="hint">${ROOM_TREE_LAYOUT[type].hint||""}</span>`;
+      node.innerHTML = `<span class="ttl">${def.name}</span><span class="sub">${subText}</span>${badge}<span class="hint">${ROOM_TREE_LAYOUT[type].hint||""}</span>`;
       inner.appendChild(node);
     });
   }
@@ -4779,6 +4836,10 @@ class Game{
   // Timestamps are shown relative to the current moment ("3m ago") rather than raw simTime,
   // since that's what's actually meaningful to a player mid-game.
   _openHistory(entity, name){
+    // Remembered so the periodic UI refresh (see the bottom of this file) can keep this panel
+    // live while it's open (design feedback: previously had to close and reopen it to see new
+    // entries) instead of it going stale the moment something happens.
+    this._historyOpenFor = entity;
     document.getElementById("historyName").textContent = name;
     const list = document.getElementById("historyList");
     list.innerHTML = "";
@@ -4840,6 +4901,11 @@ class Game{
   _openRoomInfo(room, silent){
     const def = ROOM_TYPES[room.type];
     this.selected = {kind:"room", entity:room};
+    // Center the camera on the room (design feedback: opening a room's details - whether by
+    // tapping it directly or via any other path, like the Rooms roster or a patient's target
+    // room - should bring the view to it). Reuses the same smooth follow mechanism as
+    // staff/patients; a room won't move, so it just settles there and stays.
+    if(!silent) this.followTarget = {kind:"room", id:room.id};
     if(!silent) this.closeAllPanels();
     document.getElementById("selName").textContent = def.name;
     const body = document.getElementById("selBody");
@@ -5049,6 +5115,15 @@ class Game{
       toWaitingRoom:"Heading to waiting room", beingRecalled:"Called back from waiting room",
       walkOut:"Leaving the room", leaving:"Leaving", gone:"Gone"
     }[s]||s;
+  }
+  // Adds a one-off entry to an entity's history log, for events that matter but aren't
+  // captured by the generic per-frame state-change tracking below (design feedback: "put in the
+  // history whether the consultation worked, whether there was a problem like no suitable room,
+  // etc" - things that are more specific than just "state changed to X").
+  _logHistory(entity, label){
+    entity._history = entity._history || [];
+    entity._history.push({ t:this.simTime, label });
+    if(entity._history.length>60) entity._history.shift();
   }
 
   /* ---------------- game logic update ---------------- */
@@ -5758,10 +5833,14 @@ class Game{
             const fatiguePenalty = doc && doc.energy<15 ? 0.75 : 1;
             const skillMod = (0.5 + (doc? doc.skill:40)/100) * fatiguePenalty;
             p.diagnosisProgress = clamp(p.diagnosisProgress + power*skillMod, 0, 100);
+            const justDiagnosed = !p.diagnosed && p.diagnosisProgress >= p.disease.diagnosisRequired;
             p.diagnosed = p.diagnosisProgress >= p.disease.diagnosisRequired;
             con.patientsServed++;
             con.lastServedAt = this.simTime;
             this._wearMachine(con);
+            this._logHistory(p, justDiagnosed
+              ? "🔍 Diagnosed at "+ROOM_TYPES[con.type].name+" ("+Math.round(p.diagnosisProgress)+"%)"
+              : "🔍 Examined at "+ROOM_TYPES[con.type].name+" - "+Math.round(p.diagnosisProgress)+"% diagnosed, needs more tests");
             if(doc){ doc.workPhase="seeingOut"; doc.path=null; doc.currentPatientId=null; }
             p.exitRoomId = con.id;
 
@@ -5940,6 +6019,7 @@ class Game{
               // means a hospital succeeding more than ~53% of the time trends upward overall.
               this.hospitalReputation = clamp(this.hospitalReputation+2.2, 0, 100);
               this._spawnFloatingText(p.x, p.y, "+$"+p.disease.reward, "#4caf50");
+              this._logHistory(p, "✅ Treated successfully at "+ROOM_TYPES[t.type].name+" (+$"+p.disease.reward+")");
               if(p.isEmergency && this.activeEmergency && this.activeEmergency.patientIds.includes(p.id)){
                 this.activeEmergency.curedCount++;
                 p.isEmergency = false;
@@ -5956,6 +6036,7 @@ class Game{
               // reputation trending upward instead of slowly bleeding to 0 regardless of play).
               this.hospitalReputation = clamp(this.hospitalReputation - 2.5, 0, 100);
               this.pushToast(p.name+" treatment failed...", "bad");
+              this._logHistory(p, "❌ Treatment failed at "+ROOM_TYPES[t.type].name);
             }
             p.exitRoomId = t.id;
             p.exitAfter = {type:"leave"};
@@ -5989,6 +6070,7 @@ class Game{
                 // with no visible explanation).
                 this.hospitalReputation = clamp(this.hospitalReputation - 1, 0, 100);
                 this.pushToast(p.name+" left unpaid - no working "+(ROOM_TYPES[after.roomType]?ROOM_TYPES[after.roomType].name:after.roomType)+" for their condition.", "bad");
+                this._logHistory(p, "⚠ Left unpaid - no working "+(ROOM_TYPES[after.roomType]?ROOM_TYPES[after.roomType].name:after.roomType)+" available");
                 p.state="leaving"; this._sendToExit(p);
               }
             }
@@ -6673,17 +6755,28 @@ class Game{
     this.grassPattern = this.ctx.createPattern(c, "repeat");
   }
 
-  // Smoothly moves the camera toward a followed staff/patient each frame (see followTarget,
-  // set by _openSelection on a fresh tap). Lerped rather than snapped so it reads as the camera
-  // tracking them, not jumping every time they take a step; stops gracefully if they've left/
-  // died/been removed since the follow started.
+  // Smoothly moves the camera toward a followed staff/patient/room each frame (see
+  // followTarget, set by _openSelection or _openRoomInfo on a fresh tap). Lerped rather than
+  // snapped so it reads as the camera tracking them, not jumping every time they take a step;
+  // stops gracefully if they've left/died/been removed since the follow started. A room is
+  // static so it just settles once and stays, same mechanism either way.
   _updateCameraFollow(){
     if(!this.followTarget) return;
-    let entity = null;
-    if(this.followTarget.kind==="staff") entity = this.staff.find(s=>s.id===this.followTarget.id);
-    else if(this.followTarget.kind==="patient") entity = this.patients.find(p=>p.id===this.followTarget.id && p.state!=="gone");
-    if(!entity){ this.followTarget = null; return; }
-    const iso = gridToScreen(entity.x/TILE, entity.y/TILE);
+    let iso = null;
+    if(this.followTarget.kind==="staff"){
+      const s = this.staff.find(s=>s.id===this.followTarget.id);
+      if(!s){ this.followTarget = null; return; }
+      iso = gridToScreen(s.x/TILE, s.y/TILE);
+    } else if(this.followTarget.kind==="patient"){
+      const p = this.patients.find(p=>p.id===this.followTarget.id && p.state!=="gone");
+      if(!p){ this.followTarget = null; return; }
+      iso = gridToScreen(p.x/TILE, p.y/TILE);
+    } else if(this.followTarget.kind==="room"){
+      const r = this.hospital.rooms.find(r=>r.id===this.followTarget.id);
+      if(!r){ this.followTarget = null; return; }
+      iso = gridToScreen((r.x0+r.x1)/2, (r.y0+r.y1)/2);
+    }
+    if(!iso) return;
     const followSpeed = 0.12;
     this.camera.x += (iso.x - this.camera.x) * followSpeed;
     this.camera.y += (iso.y - this.camera.y) * followSpeed;
@@ -7644,6 +7737,9 @@ class Game{
     if(document.getElementById("panelPolicy").classList.contains("show")) this._refreshPolicyPanel();
     if(document.getElementById("panelDirectory").classList.contains("show")) this._refreshDirectoryActivePane();
     if(document.getElementById("panelRoomTree").classList.contains("show")) this._renderRoomTree();
+    if(document.getElementById("panelHistory").classList.contains("show") && this._historyOpenFor){
+      this._openHistory(this._historyOpenFor, this._historyOpenFor.name);
+    }
   }
 
   _refreshPolicyPanel(){
