@@ -5,7 +5,7 @@
    0. CONSTANTS
    ========================================================================= */
 const TILE = 32;
-const GAME_VERSION = "1.5.1"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
+const GAME_VERSION = "1.6.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
 const CONSTRUCTION_SECONDS = 5; // how long a build/demolish/hire takes to actually complete (design feedback: shouldn't be instant)
 // Map is sized to comfortably fit a randomly-generated T-shaped hospital footprint (see
 // Hospital._generateShape) in any of its 4 possible orientations, at roughly 50% more total
@@ -2104,6 +2104,9 @@ class Hospital{
     } else {
       this._generateShape();
     }
+    // Blocks the outer boundary immediately, even before any room is built (addRoom also
+    // rebuilds this, but that never runs until at least one room exists otherwise).
+    this._rebuildBlocked();
   }
   // Builds a random bar+stem T, in one of 4 orientations (the direction the stem points, which
   // is also where the entrance ends up), with randomized thickness/length and a non-centered
@@ -2312,6 +2315,20 @@ class Hospital{
     if(dir==="W") this.blocked.add((x-1)+","+y+",E");
     if(dir==="E") this.blocked.add((x+1)+","+y+",W");
   }
+  // True if the edge leaving tile (x,y) in direction dir is the one gap in the outer boundary
+  // (the entrance) - used by _rebuildBlocked so that one edge stays open while every other
+  // boundary edge gets blocked.
+  _isEntranceGap(x, y, dir){
+    const ent = this.entrance;
+    if(ent.axis==="h"){
+      if(dir==="S" && y===ent.y0-1 && x>=ent.x0 && x<ent.x1) return true;
+      if(dir==="N" && y===ent.y0 && x>=ent.x0 && x<ent.x1) return true;
+    } else {
+      if(dir==="E" && x===ent.x0-1 && y>=ent.y0 && y<ent.y1) return true;
+      if(dir==="W" && x===ent.x0 && y>=ent.y0 && y<ent.y1) return true;
+    }
+    return false;
+  }
   // rebuilt from scratch on every room added - cheap given room counts stay small, and it
   // keeps the blocking logic identical (and easy to keep in sync) with the iso preview's
   _rebuildBlocked(){
@@ -2328,6 +2345,21 @@ class Hospital{
         if(!doorW) this._blockEdge(r.x0, y, "W");
         const doorE = r.doorSide==="east" && y>=r.doorFrom && y<r.doorTo;
         if(!doorE) this._blockEdge(r.x1-1, y, "E");
+      }
+    }
+    // Block the outer T-shape boundary too (design feedback: pathfinding could otherwise cut
+    // through the "cut corner" grass areas outside the building - since only room walls were
+    // ever blocked before, the shortest path between two points sometimes routed straight
+    // through the exterior wall, and characters would visibly clip outside the hospital). Every
+    // tile inside the footprint gets any edge leading outside it blocked, except the one
+    // entrance gap.
+    for(let x=0;x<MAP_W;x++){
+      for(let y=0;y<MAP_H;y++){
+        if(!this.inFootprint(x,y,1,1)) continue;
+        if(y===0 || !this.inFootprint(x,y-1,1,1)){ if(!this._isEntranceGap(x,y,"N")) this._blockEdge(x,y,"N"); }
+        if(y===MAP_H-1 || !this.inFootprint(x,y+1,1,1)){ if(!this._isEntranceGap(x,y,"S")) this._blockEdge(x,y,"S"); }
+        if(x===0 || !this.inFootprint(x-1,y,1,1)){ if(!this._isEntranceGap(x,y,"W")) this._blockEdge(x,y,"W"); }
+        if(x===MAP_W-1 || !this.inFootprint(x+1,y,1,1)){ if(!this._isEntranceGap(x,y,"E")) this._blockEdge(x,y,"E"); }
       }
     }
   }
@@ -3282,13 +3314,22 @@ class Game{
   // read them all). Every message is kept in messageHistory (tap the banner to see the full
   // log); the banner itself shows them one after another, each scrolling right-to-left, picking
   // up the next queued message as soon as the current one finishes.
-  pushToast(text, cls){
+  pushToast(text, cls, priority){
     const entry = { text, cls: cls||"", t: this.simTime||0 };
     this.messageHistory = this.messageHistory || [];
     this.messageHistory.unshift(entry);
     if(this.messageHistory.length>200) this.messageHistory.pop();
     this._bannerQueue = this._bannerQueue || [];
-    this._bannerQueue.push(entry);
+    if(priority){
+      // Priority messages (design feedback: "not enough money", "someone left without paying",
+      // "an inspector is arriving" should show almost immediately) jump the queue AND cut off
+      // whatever's currently scrolling, instead of waiting behind however many routine messages
+      // are already queued up.
+      this._bannerQueue.unshift(entry);
+      this._bannerAnimating = false;
+    } else {
+      this._bannerQueue.push(entry);
+    }
     // If messages are arriving faster than the banner can scroll through them (a chaotic
     // moment with lots of alerts), don't make the player sit through a huge backlog just to
     // see what's happening right now - drop the oldest still-queued ones. They're never lost:
@@ -3567,7 +3608,7 @@ class Game{
       return;
     }
     if(!this.economy.canAfford(def.cost)){
-      this.pushToast("Not enough money!", "bad");
+      this.pushToast("Not enough money!", "bad", true);
       return;
     }
     this.economy.spend(def.cost);
@@ -3612,7 +3653,7 @@ class Game{
     if(!pb || !pb.valid) return;
     const def = ROOM_TYPES[pb.type];
     if(!this.economy.canAfford(def.cost)){
-      this.pushToast("Not enough money!", "bad");
+      this.pushToast("Not enough money!", "bad", true);
       return;
     }
     this.economy.spend(def.cost);
@@ -3921,7 +3962,7 @@ class Game{
   // separate bottom message bar - the toast below already says what to do.
   beginHirePlacement(type, specialty){
     const def = STAFF_TYPES[type];
-    if(!this.economy.canAfford(def.cost)){ this.pushToast("Not enough money to hire.", "bad"); return; }
+    if(!this.economy.canAfford(def.cost)){ this.pushToast("Not enough money to hire.", "bad", true); return; }
     this.economy.spend(def.cost);
     const homeRoom = this.hospital.roomsOfType("staffroom")[0] || this.hospital.roomsOfType("reception")[0];
     const pos = homeRoom? this.hospital.roomCenterWorld(homeRoom) : {x:MAP_W*TILE/2,y:MAP_H*TILE/2};
@@ -3985,7 +4026,7 @@ class Game{
   // kept for save-compatibility and any internal callers that want the old one-shot behavior.
   hireStaff(type, specialty){
     const def = STAFF_TYPES[type];
-    if(!this.economy.canAfford(def.cost)){ this.pushToast("Not enough money to hire.", "bad"); return; }
+    if(!this.economy.canAfford(def.cost)){ this.pushToast("Not enough money to hire.", "bad", true); return; }
     // spawn near a staffroom or reception if exists, else map center
     const homeRoom = this.hospital.roomsOfType("staffroom")[0] || this.hospital.roomsOfType("reception")[0];
     const pos = homeRoom? this.hospital.roomCenterWorld(homeRoom) : {x:MAP_W*TILE/2,y:MAP_H*TILE/2};
@@ -5485,6 +5526,10 @@ class Game{
     } else if(ev.id==="influx"){
       this.spawnTimer = 0.5;
       this.pushToast("👥 "+ev.text, "bad");
+    } else if(ev.id==="inspector"){
+      // Design feedback: an inspector arriving is exactly the kind of thing a player needs to
+      // know about right away, not several messages later.
+      this.pushToast("🕵️ "+ev.text, "bad", true);
     } else {
       this.pushToast(ev.text, "bad");
     }
@@ -5603,8 +5648,11 @@ class Game{
         if(p.health<=0){ this._patientDies(p); continue; }
       }
       if(p.state==="dead"){
-        p.deadTimer -= dt;
-        if(p.deadTimer<=0) p.state="gone";
+        // The body stays put and visible until a janitor actually cleans it up (see
+        // _patientDies / the "cleaning" staff state, which is what now sets state="gone") -
+        // deadTimer still counts up for the fall-down/settle fade-in animation, just doesn't
+        // drive removal anymore.
+        p.deadTimer = (p.deadTimer||0) + dt;
         continue;
       }
 
@@ -6069,7 +6117,7 @@ class Game{
                 // built+staffed room of the type their disease needed, and they silently gave up
                 // with no visible explanation).
                 this.hospitalReputation = clamp(this.hospitalReputation - 1, 0, 100);
-                this.pushToast(p.name+" left unpaid - no working "+(ROOM_TYPES[after.roomType]?ROOM_TYPES[after.roomType].name:after.roomType)+" for their condition.", "bad");
+                this.pushToast(p.name+" left unpaid - no working "+(ROOM_TYPES[after.roomType]?ROOM_TYPES[after.roomType].name:after.roomType)+" for their condition.", "bad", true);
                 this._logHistory(p, "⚠ Left unpaid - no working "+(ROOM_TYPES[after.roomType]?ROOM_TYPES[after.roomType].name:after.roomType)+" available");
                 p.state="leaving"; this._sendToExit(p);
               }
@@ -6275,11 +6323,16 @@ class Game{
     this._releaseTreatmentTeam(p);
     this.hospitalReputation = clamp(this.hospitalReputation - 8, 0, 100);
     this.economy.totalDeaths = (this.economy.totalDeaths||0) + 1;
-    this.pushToast(p.name+" has died. This hurts the hospital's reputation.", "bad");
-    // linger a few seconds, lying down with a skull marker, before actually being removed -
-    // makes the death legible instead of the patient just silently vanishing
+    this.pushToast(p.name+" has died. This hurts the hospital's reputation.", "bad", true);
+    // The body stays right where they died - as a "body" mess, reusing the exact same
+    // mess-cleanup system as vomit/poop (design feedback: bodies and messes should persist
+    // until a janitor actually deals with them, not vanish on a fixed timer regardless of
+    // whether anyone's come to clean up). It keeps costing a little reputation every tick it's
+    // left lying around, same idea as an uncleaned mess, so ignoring it isn't free.
+    const tileX = clamp(Math.floor(p.x/TILE), 0, MAP_W-1);
+    const tileY = clamp(Math.floor(p.y/TILE), 0, MAP_H-1);
+    this.hospital.messes.push({ id: uid(), x: p.x, y: p.y, tileX, tileY, type: "body", age: 0, patientId: p.id });
     p.state = "dead";
-    p.deadTimer = 4;
     p.path = null;
   }
 
@@ -6583,6 +6636,15 @@ class Game{
           s.stateTimer -= dt;
           s.energy = clamp(s.energy - dt*0.15, 0, 100);
           if(s.stateTimer<=0){
+            const mess = this.hospital.messes.find(m=>m.id===s.cleaningMessId);
+            // A "body" mess additionally clears the deceased patient once actually cleaned up -
+            // they were kept in state "dead" (still rendered, lying there) specifically so this
+            // moment is what removes them, not a fixed timer that ran regardless of whether a
+            // janitor ever showed up.
+            if(mess && mess.type==="body"){
+              const p = this.patients.find(x=>x.id===mess.patientId);
+              if(p) p.state = "gone";
+            }
             this.hospital.messes = this.hospital.messes.filter(m=>m.id!==s.cleaningMessId);
             s.cleaningMessId = null;
             s.state = "idle";
@@ -7114,16 +7176,23 @@ class Game{
     const color = "#5f5648";
     const H = this.hospital;
     const bar = H.bar, stem = H.stem, ent = H.entrance;
-    // Horizontal wall run (fixed row, spanning x0..x1), optionally skipping a gap range
-    // (the entrance, when it's on this particular wall).
-    const hRun = (x0,x1,y,gap)=>{
+    // Same convention as room walls: south/east-facing walls are the ones nearest the camera,
+    // and get hidden while placing a room or furniture (design feedback: they blocked the view
+    // of exactly the area the player is trying to place something in). North/west walls (and
+    // the entrance itself) stay visible either way, since they're not in the way of the view.
+    const hideNear = !!(this.buildMode || this.placeMode);
+    // Horizontal wall run (fixed row, spanning x0..x1), tagged with which way it faces so the
+    // near-wall hiding above can apply; optionally skips a gap range (the entrance).
+    const hRun = (x0,x1,y,facing,gap)=>{
+      if(hideNear && (facing==="S"||facing==="E")) return;
       for(let x=x0;x<x1;x++){
         if(gap && x>=gap.x0 && x<gap.x1) continue;
         drawables.push({ depth: x+0.5+y, fn:(ctx)=>wallQuad(ctx,x,y,x+1,y,color,WALL_H_OUTER) });
       }
     };
-    // Vertical wall run (fixed column, spanning y0..y1), same gap-skipping idea.
-    const vRun = (x,y0,y1,gap)=>{
+    // Vertical wall run (fixed column, spanning y0..y1), same idea.
+    const vRun = (x,y0,y1,facing,gap)=>{
+      if(hideNear && (facing==="S"||facing==="E")) return;
       for(let y=y0;y<y1;y++){
         if(gap && y>=gap.y0 && y<gap.y1) continue;
         drawables.push({ depth: x+y+0.5, fn:(ctx)=>wallQuad(ctx,x,y,x,y+1,color,WALL_H_OUTER) });
@@ -7136,26 +7205,28 @@ class Game{
       const barFarY = dir==="down" ? bar.y0 : bar.y1;   // the bar's outer edge, away from the stem
       const seamY = dir==="down" ? bar.y1 : bar.y0;      // where bar meets stem
       const stemFarY = dir==="down" ? stem.y1 : stem.y0; // the stem's outer edge (entrance wall)
-      hRun(bar.x0, bar.x1, barFarY);                     // bar's outer long wall
-      vRun(bar.x0, bar.y0, bar.y1);                       // bar left
-      vRun(bar.x1, bar.y0, bar.y1);                       // bar right
-      hRun(bar.x0, stem.x0, seamY);                        // left shoulder
-      hRun(stem.x1, bar.x1, seamY);                        // right shoulder
-      vRun(stem.x0, stem.y0, stem.y1);                      // stem left
-      vRun(stem.x1, stem.y0, stem.y1);                      // stem right
-      hRun(stem.x0, stem.x1, stemFarY, hGap);                // stem outer wall, with entrance gap
+      const farFacing = dir==="down" ? "N" : "S", seamFacing = dir==="down" ? "S" : "N";
+      hRun(bar.x0, bar.x1, barFarY, farFacing);           // bar's outer long wall
+      vRun(bar.x0, bar.y0, bar.y1, "W");                   // bar left
+      vRun(bar.x1, bar.y0, bar.y1, "E");                   // bar right
+      hRun(bar.x0, stem.x0, seamY, seamFacing);             // left shoulder
+      hRun(stem.x1, bar.x1, seamY, seamFacing);             // right shoulder
+      vRun(stem.x0, stem.y0, stem.y1, "W");                  // stem left
+      vRun(stem.x1, stem.y0, stem.y1, "E");                  // stem right
+      hRun(stem.x0, stem.x1, stemFarY, farFacing, hGap);      // stem outer wall, with entrance gap
     } else {
       const barFarX = dir==="right" ? bar.x0 : bar.x1;
       const seamX = dir==="right" ? bar.x1 : bar.x0;
       const stemFarX = dir==="right" ? stem.x1 : stem.x0;
-      vRun(barFarX, bar.y0, bar.y1);
-      hRun(bar.x0, bar.x1, bar.y0);
-      hRun(bar.x0, bar.x1, bar.y1);
-      vRun(seamX, bar.y0, stem.y0);
-      vRun(seamX, stem.y1, bar.y1);
-      hRun(stem.x0, stem.x1, stem.y0);
-      hRun(stem.x0, stem.x1, stem.y1);
-      vRun(stemFarX, stem.y0, stem.y1, vGap);
+      const farFacing = dir==="right" ? "W" : "E", seamFacing = dir==="right" ? "E" : "W";
+      vRun(barFarX, bar.y0, bar.y1, farFacing);
+      hRun(bar.x0, bar.x1, bar.y0, "N");
+      hRun(bar.x0, bar.x1, bar.y1, "S");
+      vRun(seamX, bar.y0, stem.y0, seamFacing);
+      vRun(seamX, stem.y1, bar.y1, seamFacing);
+      hRun(stem.x0, stem.x1, stem.y0, "N");
+      hRun(stem.x0, stem.x1, stem.y1, "S");
+      vRun(stemFarX, stem.y0, stem.y1, farFacing, vGap);
     }
 
     // door + small sign, at whichever tile the entrance actually ended up on
@@ -7259,6 +7330,10 @@ class Game{
   }
 
   _drawMess(ctx, m, x, y){
+    // A "body" mess is a purely logical marker for the janitor to path to and clean - the
+    // deceased patient already renders their own lying-down body + skull (see the patient
+    // rendering code), so drawing anything here too would double it up.
+    if(m.type==="body") return;
     ctx.save();
     ctx.translate(x, y);
     if(m.type==="poop"){
@@ -7590,11 +7665,13 @@ class Game{
       ctx.fillStyle=pants; ctx.beginPath(); ctx.ellipse(-9,2.5,6,3.4,0,0,Math.PI*2); ctx.fill();
       ctx.fillStyle=skin; ctx.beginPath(); ctx.arc(11,1.5,4.4,0,Math.PI*2); ctx.fill();
       ctx.fillStyle=hairColor; ctx.beginPath(); ctx.arc(11,-1.2,3.4,Math.PI,Math.PI*2); ctx.fill();
-      // fading skull marker, drifting slightly up over the lingering time
-      const fade = clamp(p.deadTimer/4, 0, 1);
-      ctx.globalAlpha = 0.55+0.45*fade;
+      // fading-IN skull marker over the first second (settles in place), then stays fully
+      // visible indefinitely - the body itself no longer disappears on its own; only the
+      // janitor cleaning it up (see the "cleaning" state) removes it now.
+      const fadeIn = clamp((p.deadTimer||0)/1, 0, 1);
+      ctx.globalAlpha = 0.55+0.45*fadeIn;
       ctx.font="13px sans-serif"; ctx.textAlign="center";
-      ctx.fillText("💀", 0, -14-(1-fade)*6);
+      ctx.fillText("💀", 0, -14-(1-fadeIn)*6);
       ctx.restore();
       return;
     }
