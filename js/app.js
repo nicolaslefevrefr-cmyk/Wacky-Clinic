@@ -5,31 +5,15 @@
    0. CONSTANTS
    ========================================================================= */
 const TILE = 32;
-const GAME_VERSION = "1.4.1"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
+const GAME_VERSION = "1.5.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
 const CONSTRUCTION_SECONDS = 5; // how long a build/demolish/hire takes to actually complete (design feedback: shouldn't be instant)
-const MAP_W = 26;   // tiles
-const MAP_H = 18;   // tiles
-// The buildable footprint is a "T" shape rather than the full rectangle (design feedback: a
-// plain square hospital felt too generic/easy to fill edge-to-edge; a T forces some layout
-// planning). BAR is the wide top crossbar, STEM is the narrower vertical branch going down to
-// the entrance - both are at least 8 tiles across, per the "no branch narrower than 8 cells"
-// requirement. They're contiguous (STEM starts exactly where BAR ends) so together they trace
-// a single unbroken T with no gap at the seam.
-const HOSPITAL_BAR = { x0:1, x1:25, y0:1, y1:9 };   // 24 wide x 8 tall
-const HOSPITAL_STEM = { x0:9, x1:17, y0:9, y1:18 }; // 8 wide x 9 tall, reaches the south edge (entrance)
+// Map is sized to comfortably fit a randomly-generated T-shaped hospital footprint (see
+// Hospital._generateShape) in any of its 4 possible orientations, at roughly 50% more total
+// buildable area than the original fixed 24x8 + 8x9 T (design feedback).
+const MAP_W = 32;   // tiles
+const MAP_H = 26;   // tiles
 // True if the whole rectangle [tx,ty,tx+tw,ty+th) lies inside the T-shaped footprint above -
 // used by canPlaceRoom so nothing can be built in the "cut corners" outside the T.
-function inHospitalFootprint(tx,ty,tw,th){
-  const x0=tx, y0=ty, x1=tx+tw, y1=ty+th;
-  if(x0<0||y0<0||x1>MAP_W||y1>MAP_H) return false;
-  if(y1 > HOSPITAL_BAR.y1){ // any part of the room falls in the stem's row range
-    if(x0 < HOSPITAL_STEM.x0 || x1 > HOSPITAL_STEM.x1) return false;
-  }
-  if(y0 < HOSPITAL_BAR.y1){ // any part of the room falls in the bar's row range
-    if(x0 < HOSPITAL_BAR.x0 || x1 > HOSPITAL_BAR.x1) return false;
-  }
-  return true;
-}
 const SAVE_KEY = "wacky_clinic_save_v2";
 const DPR_CAP = 2.5;
 
@@ -39,33 +23,33 @@ const DPR_CAP = 2.5;
 // node per physical room instance. Positions are in a fixed virtual coordinate space; the
 // viewport pans/zooms over it independently of the main game camera.
 const ROOM_TREE_LAYOUT = {
-  reception:          {x:40,  y:260, tier:0},
-  consultation:       {x:260, y:260, tier:1},
-  diagnostic:         {x:520, y:40,  tier:2},
-  cardiogram:         {x:520, y:150, tier:2},
-  scanner:            {x:520, y:260, tier:2},
-  ultrascan:          {x:520, y:370, tier:2},
-  bloodMachine:       {x:520, y:480, tier:2},
-  xray:               {x:520, y:590, tier:2},
-  ward:               {x:520, y:700, tier:2},
-  pharmacy:           {x:800, y:40,  tier:3},
-  treatment:          {x:800, y:130, tier:3},
-  operating:          {x:800, y:220, tier:3},
-  psychiatric:        {x:800, y:310, tier:3},
-  inflation:          {x:800, y:400, tier:3},
-  deflation:          {x:800, y:490, tier:3},
-  dnaFixer:           {x:800, y:580, tier:3},
-  hairRestoration:    {x:1030,y:40,  tier:3},
-  slackTongueClinic:  {x:1030,y:130, tier:3},
-  fractureClinic:     {x:1030,y:220, tier:3},
-  electrolysis:       {x:1030,y:310, tier:3},
-  jellyVat:           {x:1030,y:400, tier:3},
-  decontamination:    {x:1030,y:490, tier:3},
-  staffroom:          {x:40,  y:820, tier:4},
-  toilets:            {x:190, y:820, tier:4},
-  research:           {x:340, y:820, tier:4},
-  trainingRoom:       {x:490, y:820, tier:4},
-  waitingRoom:        {x:640, y:820, tier:4},
+  reception:          {x:40,  y:260, tier:0, hint:"Patients register here first"},
+  consultation:       {x:260, y:260, tier:1, hint:"GP examines & diagnoses"},
+  diagnostic:         {x:520, y:40,  tier:2, hint:"Extra diagnostic test"},
+  cardiogram:         {x:520, y:150, tier:2, hint:"Extra diagnostic test"},
+  scanner:            {x:520, y:260, tier:2, hint:"Extra diagnostic test"},
+  ultrascan:          {x:520, y:370, tier:2, hint:"Extra diagnostic test"},
+  bloodMachine:       {x:520, y:480, tier:2, hint:"Extra diagnostic test"},
+  xray:               {x:520, y:590, tier:2, hint:"Extra diagnostic test"},
+  ward:               {x:520, y:700, tier:2, hint:"Observation & recovery beds"},
+  pharmacy:           {x:800, y:40,  tier:3, hint:"Dispenses the cure"},
+  treatment:          {x:800, y:130, tier:3, hint:"General-purpose treatment"},
+  operating:          {x:800, y:220, tier:3, hint:"Surgery - needs 2 surgeons"},
+  psychiatric:        {x:800, y:310, tier:3, hint:"Talk therapy cures the mind"},
+  inflation:          {x:800, y:400, tier:3, hint:"Re-inflates Bloaty Head"},
+  deflation:          {x:800, y:490, tier:3, hint:"Deflates Puffy Head"},
+  dnaFixer:           {x:800, y:580, tier:3, hint:"Untangles Alien DNA"},
+  hairRestoration:    {x:1030,y:40,  tier:3, hint:"Cures Baldness"},
+  slackTongueClinic:  {x:1030,y:130, tier:3, hint:"Trims an Overlong Tongue"},
+  fractureClinic:     {x:1030,y:220, tier:3, hint:"Sets Fractured Bones"},
+  electrolysis:       {x:1030,y:310, tier:3, hint:"Zaps away Hairyitis"},
+  jellyVat:           {x:1030,y:400, tier:3, hint:"Firms up Jellyitis"},
+  decontamination:    {x:1030,y:490, tier:3, hint:"Strips Serious Radiation"},
+  staffroom:          {x:40,  y:820, tier:4, hint:"Staff rest & recover here"},
+  toilets:            {x:190, y:820, tier:4, hint:"Keeps patients comfortable"},
+  research:           {x:340, y:820, tier:4, hint:"Unlocks upgrades over time"},
+  trainingRoom:       {x:490, y:820, tier:4, hint:"Consultants train Junior doctors"},
+  waitingRoom:        {x:640, y:820, tier:4, hint:"Overflow seating near queues"},
 };
 
 // Isometric projection - identical constants/formula to the validated iso preview.
@@ -2103,18 +2087,103 @@ class Camera{
    4. HOSPITAL GRID
    ========================================================================= */
 class Hospital{
-  constructor(){
+  constructor(loadedShape){
     this.rooms = []; // {id, type, x0,y0,x1,y1, x,y,w,h, doorSide, doorFrom, doorTo, staffIds:[], queue:[], ...}
     this.objects = []; // player-placed functional furniture: {id, type, x, y, occupiedBy}
     this.messes = []; // floor messes from untreated GI diseases: {id, x, y, tileX, tileY, type, age}
     this.blocked = new Set(); // edge-based wall blocking, exactly like the validated iso preview
-    // the hospital's own outer shell has exactly one opening - everyone spawns/leaves through here
-    const ew = 2;
-    this.entrance = { x0: Math.floor(MAP_W/2)-1, x1: Math.floor(MAP_W/2)-1+ew, y: MAP_H-1 };
+    // The buildable footprint is a "T" shape rather than the full rectangle (design feedback: a
+    // plain square hospital felt too generic/easy to fill edge-to-edge). Randomized per new game
+    // (design feedback: the branch doesn't need to be centered, the crossbar can point in any of
+    // the 4 directions, sizes vary) - both the bar and the stem are always at least 8 tiles
+    // across, per the "no branch narrower than 8 cells" requirement. A reloaded game passes its
+    // previously-generated shape back in so existing rooms don't end up outside the footprint.
+    if(loadedShape){
+      this.bar = loadedShape.bar; this.stem = loadedShape.stem;
+      this.entrance = loadedShape.entrance; this.direction = loadedShape.direction;
+    } else {
+      this._generateShape();
+    }
+  }
+  // Builds a random bar+stem T, in one of 4 orientations (the direction the stem points, which
+  // is also where the entrance ends up), with randomized thickness/length and a non-centered
+  // stem offset along the bar.
+  _generateShape(){
+    const margin = 1;
+    const direction = ["down","up","left","right"][Math.floor(Math.random()*4)];
+    const barThickness = 9 + Math.floor(Math.random()*4);   // 9-12
+    const stemThickness = 9 + Math.floor(Math.random()*4);  // 9-12
+    const stemLength = 10 + Math.floor(Math.random()*5);    // 10-14
+    const ew = 2; // entrance gap width, same as before
+    let bar, stem, entrance;
+    if(direction==="down" || direction==="up"){
+      const barX0=margin, barX1=MAP_W-margin;
+      const stemX0 = barX0 + Math.floor(Math.random()*Math.max(1,(barX1-barX0-stemThickness)));
+      const stemX1 = stemX0+stemThickness;
+      const entX0 = clamp(stemX0+Math.floor((stemThickness-ew)/2), stemX0, stemX1-ew);
+      if(direction==="down"){
+        const barY0=margin, barY1=barY0+barThickness;
+        const stemY0=barY1, stemY1=Math.min(MAP_H-margin, stemY0+stemLength);
+        bar={x0:barX0,x1:barX1,y0:barY0,y1:barY1};
+        stem={x0:stemX0,x1:stemX1,y0:stemY0,y1:stemY1};
+        entrance={axis:"h", x0:entX0, x1:entX0+ew, y0:stemY1, y1:stemY1};
+      } else {
+        const barY1=MAP_H-margin, barY0=barY1-barThickness;
+        const stemY1=barY0, stemY0=Math.max(margin, stemY1-stemLength);
+        bar={x0:barX0,x1:barX1,y0:barY0,y1:barY1};
+        stem={x0:stemX0,x1:stemX1,y0:stemY0,y1:stemY1};
+        entrance={axis:"h", x0:entX0, x1:entX0+ew, y0:stemY0, y1:stemY0};
+      }
+    } else {
+      const barY0=margin, barY1=MAP_H-margin;
+      const stemY0 = barY0 + Math.floor(Math.random()*Math.max(1,(barY1-barY0-stemThickness)));
+      const stemY1 = stemY0+stemThickness;
+      const entY0 = clamp(stemY0+Math.floor((stemThickness-ew)/2), stemY0, stemY1-ew);
+      if(direction==="right"){
+        const barX0=margin, barX1=barX0+barThickness;
+        const stemX0=barX1, stemX1=Math.min(MAP_W-margin, stemX0+stemLength);
+        bar={x0:barX0,x1:barX1,y0:barY0,y1:barY1};
+        stem={x0:stemX0,x1:stemX1,y0:stemY0,y1:stemY1};
+        entrance={axis:"v", y0:entY0, y1:entY0+ew, x0:stemX1, x1:stemX1};
+      } else {
+        const barX1=MAP_W-margin, barX0=barX1-barThickness;
+        const stemX1=barX0, stemX0=Math.max(margin, stemX1-stemLength);
+        bar={x0:barX0,x1:barX1,y0:barY0,y1:barY1};
+        stem={x0:stemX0,x1:stemX1,y0:stemY0,y1:stemY1};
+        entrance={axis:"v", y0:entY0, y1:entY0+ew, x0:stemX0, x1:stemX0};
+      }
+    }
+    this.bar = bar; this.stem = stem; this.entrance = entrance; this.direction = direction;
+  }
+  // True if the whole rectangle [tx,ty,tx+tw,ty+th) lies inside the T-shaped footprint (bar ∪
+  // stem). Generalized for any of the 4 orientations by detecting, at runtime, whether bar/stem
+  // are stacked vertically (down/up) or side-by-side horizontally (left/right) from their own
+  // shared-edge geometry, rather than hardcoding one specific layout.
+  inFootprint(tx,ty,tw,th){
+    const x0=tx, y0=ty, x1=tx+tw, y1=ty+th;
+    if(x0<0||y0<0||x1>MAP_W||y1>MAP_H) return false;
+    const bar=this.bar, stem=this.stem;
+    if(bar.y1===stem.y0 || bar.y0===stem.y1){ // stacked vertically
+      const topIsBar = bar.y1===stem.y0;
+      const topRect = topIsBar? bar: stem, bottomRect = topIsBar? stem: bar;
+      if(y1 > topRect.y1){ if(x0<bottomRect.x0||x1>bottomRect.x1) return false; }
+      if(y0 < topRect.y1){ if(x0<topRect.x0||x1>topRect.x1) return false; }
+      return true;
+    } else { // side by side horizontally
+      const leftIsBar = bar.x1===stem.x0;
+      const leftRect = leftIsBar? bar: stem, rightRect = leftIsBar? stem: bar;
+      if(x1 > leftRect.x1){ if(y0<rightRect.y0||y1>rightRect.y1) return false; }
+      if(x0 < leftRect.x1){ if(y0<leftRect.y0||y1>leftRect.y1) return false; }
+      return true;
+    }
   }
   entranceTile(){
+    if(this.entrance.axis==="v"){
+      const ey = clamp(this.entrance.y0 + Math.floor((this.entrance.y1-this.entrance.y0)/2), this.entrance.y0, this.entrance.y1-1);
+      return { x: this.entrance.x0, y: ey };
+    }
     const ex = clamp(this.entrance.x0 + Math.floor((this.entrance.x1-this.entrance.x0)/2), this.entrance.x0, this.entrance.x1-1);
-    return { x: ex, y: this.entrance.y };
+    return { x: ex, y: this.entrance.y0 };
   }
   inBounds(x,y){ return x>=0 && y>=0 && x<MAP_W && y<MAP_H; }
   // "walkable" now means "not inside a room's solid interior" (edges handle the fine-grained
@@ -2143,7 +2212,7 @@ class Hospital{
     if(tw<def.minW || th<def.minH) return {ok:false,reason:"Too small"};
     if(tw>def.maxW || th>def.maxH) return {ok:false,reason:"Too large"};
     if(tx<0||ty<0||tx+tw>MAP_W||ty+th>MAP_H) return {ok:false,reason:"Out of bounds"};
-    if(!inHospitalFootprint(tx,ty,tw,th)) return {ok:false,reason:"Outside the hospital grounds"};
+    if(!this.inFootprint(tx,ty,tw,th)) return {ok:false,reason:"Outside the hospital grounds"};
     for(const r of this.rooms){
       if(tx < r.x1 && tx+tw > r.x0 && ty < r.y1 && ty+th > r.y0){
         return {ok:false, reason:"Overlaps another room"};
@@ -2352,7 +2421,11 @@ class Hospital{
   canPlaceObject(tx,ty){
     if(!this.inBounds(tx,ty)) return false;
     if(this.roomAt(tx,ty)) return false; // must sit on open corridor floor, not inside a room
-    if(tx>=this.entrance.x0 && tx<this.entrance.x1 && ty===this.entrance.y) return false; // keep the entrance clear
+    // keep the entrance clear, whichever wall (and axis) it ended up on
+    const inEntranceGap = this.entrance.axis==="v"
+      ? (ty>=this.entrance.y0 && ty<this.entrance.y1 && tx===this.entrance.x0)
+      : (tx>=this.entrance.x0 && tx<this.entrance.x1 && ty===this.entrance.y0);
+    if(inEntranceGap) return false;
     if(this.objects.some(o=>o.x===tx && o.y===ty)) return false;
     return true;
   }
@@ -2988,7 +3061,7 @@ class Game{
     this._refreshBuildList();
     // The hospital starts genuinely empty (design feedback: pre-placed starter rooms took away
     // the very first decision of the game) - the player picks where everything goes from
-    // scratch, within the T-shaped grounds (see HOSPITAL_BAR/HOSPITAL_STEM), starting from
+    // scratch, within the randomly-generated T-shaped grounds (see Hospital._generateShape), starting from
     // nothing but the entrance.
     this.pushToast("Welcome! Build a Reception first, then hire staff. Press ▶ when ready.", "good");
     this.save();
@@ -3041,6 +3114,7 @@ class Game{
       policy:this.policy,
       hasStartedPlaying:this.hasStartedPlaying,
       statsHistory:this.statsHistory,
+      hospitalShape:{ bar:this.hospital.bar, stem:this.hospital.stem, entrance:this.hospital.entrance, direction:this.hospital.direction },
       objects:this.hospital.objects.map(o=>({id:o.id,type:o.type,x:o.x,y:o.y})),
       messes:this.hospital.messes.map(m=>({id:m.id,x:m.x,y:m.y,tileX:m.tileX,tileY:m.tileY,type:m.type})),
       day:this.day, simTime:this.simTime,
@@ -3050,7 +3124,11 @@ class Game{
     };
   }
   _deserialize(data){
-    this.hospital = new Hospital();
+    // A save always carries the T-shape it was generated with (design feedback: the hospital's
+    // footprint is now randomized per new game, so reloading must reuse the same shape rather
+    // than rolling a new one - otherwise previously-built rooms could end up outside the new
+    // footprint, or the outer walls wouldn't line up with them at all).
+    this.hospital = new Hospital(data.hospitalShape || null);
     this.economy = new Economy();
     this.economy.money = data.money ?? 12000;
     this.economy.totalTreated = data.totalTreated||0;
@@ -3425,7 +3503,6 @@ class Game{
           if(ok){
             this.pushToast(st.name+" will start in "+CONSTRUCTION_SECONDS+"s.", "good");
             this.hireMode = null;
-            document.getElementById("hirePlaceBar").style.display = "none";
             this._syncCancelBtn();
             this._resumeAfterHireMode();
           }
@@ -3672,7 +3749,8 @@ class Game{
     });
     document.getElementById("btnManage").addEventListener("click", ()=>{ this._refreshManagePanel(); this.togglePanel("panelManage","btnManage"); });
     document.getElementById("btnResearch").addEventListener("click", ()=>{ this._refreshResearchPanel(); this.togglePanel("panelResearchTree","btnResearch"); });
-    document.getElementById("objectivesBtn").addEventListener("click", ()=>{ this._refreshObjectives(); document.getElementById("panelObjectives").classList.toggle("show"); });
+    // Objectives button removed from the header for now (design feedback: not useful enough to
+    // take up header space) - the panel/logic itself is left in place in case it comes back.
     document.getElementById("alertsBtn").addEventListener("click", ()=>{ this._refreshAlertsPanel(); document.getElementById("panelAlerts").classList.toggle("show"); });
     document.getElementById("settingsBtn").addEventListener("click", ()=>{ document.getElementById("panelSettings").classList.toggle("show"); });
     document.getElementById("toggleShowPaths").addEventListener("click", (e)=>{
@@ -3722,15 +3800,15 @@ class Game{
     document.getElementById("bcCancel").addEventListener("click", ()=>this.cancelBuild());
     document.getElementById("bcConfirm").addEventListener("click", ()=>this.confirmBuild());
     document.getElementById("fpCancel").addEventListener("click", ()=>this.cancelPlaceMode());
-    document.getElementById("hpCancel").addEventListener("click", ()=>this.cancelHireMode());
+    document.getElementById("cancelModeBtn").addEventListener("click", ()=>{
+      if(this.buildMode) this.cancelBuild();
+      if(this.placeMode) this.cancelPlaceMode();
+      if(this.hireMode) this.cancelHireMode();
+    });
     document.getElementById("msgBanner").addEventListener("click", ()=>this._openMsgHistory());
     document.getElementById("msgBannerTrack").addEventListener("animationend", ()=>{
       this._bannerAnimating = false;
       this._advanceBanner();
-    });
-    document.getElementById("cancelModeBtn").addEventListener("click", ()=>{
-      if(this.buildMode) this.cancelBuild();
-      if(this.placeMode) this.cancelPlaceMode();
     });
     document.querySelectorAll(".doorSideBtn").forEach(b=>{
       b.addEventListener("click", ()=>{
@@ -3775,7 +3853,7 @@ class Game{
         const sp = parseInt(btn.dataset.speed,10);
         this.paused = sp===0;
         this.speedMult = sp===0? 1: sp;
-        document.getElementById("pauseOverlay").classList.toggle("show", this.paused);
+        this._syncPauseOverlay();
         if(sp>0 && !this.hasStartedPlaying){
           this.hasStartedPlaying = true;
           this.pushToast("Patients are starting to arrive!", "good");
@@ -3810,13 +3888,27 @@ class Game{
     document.querySelectorAll(".bigBtn").forEach(b=>b.classList.remove("active"));
   }
 
+  _syncCancelBtn(){
+    document.getElementById("cancelModeBtn").classList.toggle("show", !!this.buildMode || !!this.placeMode || !!this.hireMode);
+  }
+
+  // Only shows the dimmed "⏸ PAUSED" overlay once the game has actually been played (pressed ▶
+  // at least once) - design feedback: before that, the whole point of the setup phase is that
+  // nothing is running yet, so a "paused" overlay over ordinary building/hiring reads as if
+  // something went wrong rather than just being the game's normal pre-start state.
+  _syncPauseOverlay(){
+    document.getElementById("pauseOverlay").classList.toggle("show", this.paused && this.hasStartedPlaying);
+  }
+
   // Step 1 of hiring (design feedback: shouldn't auto-place someone in a random room). Creates
   // the staff member immediately (cost is spent right away) but marks them `pendingHire` - they
   // stand near the entrance, don't work yet, and won't start their onboarding countdown until
   // the player taps the room to assign them to. The simulation pauses so nothing moves out from
-  // under the player while they decide, but this is a lightweight "hold" rather than the real
-  // Pause button: no dimmed overlay, and whatever speed was running resumes automatically once
-  // the room is picked (or the hire is cancelled) - see _resumeAfterHireMode.
+  // under the player while they decide (dimmed overlay only if the game was actually running -
+  // see _syncPauseOverlay); whatever speed was running resumes automatically once the room is
+  // picked or the hire is cancelled - see _resumeAfterHireMode. The "tap a room" prompt reuses
+  // the same small top ✕ Cancel button as build/furniture placement, instead of its own
+  // separate bottom message bar - the toast below already says what to do.
   beginHirePlacement(type, specialty){
     const def = STAFF_TYPES[type];
     if(!this.economy.canAfford(def.cost)){ this.pushToast("Not enough money to hire.", "bad"); return; }
@@ -3824,6 +3916,16 @@ class Game{
     const homeRoom = this.hospital.roomsOfType("staffroom")[0] || this.hospital.roomsOfType("reception")[0];
     const pos = homeRoom? this.hospital.roomCenterWorld(homeRoom) : {x:MAP_W*TILE/2,y:MAP_H*TILE/2};
     const st = new Staff(type, pos.x, pos.y, specialty||null);
+    // Handymen aren't assigned to a specific room at all (design feedback: they patrol the
+    // whole hospital on their own, unlike every other role) - skip the room-placement step
+    // entirely and just add them straight to the roster, already working.
+    if(type==="maintenance"){
+      this.staff.push(st);
+      this.closeAllPanels();
+      this.pushToast(st.name+" hired and is patrolling the hospital.", "good");
+      this.save();
+      return;
+    }
     st.pendingHire = true;
     this.staff.push(st);
     this.hireMode = {staffId: st.id};
@@ -3832,10 +3934,7 @@ class Game{
     // same state afterward, instead of always landing back on Pause.
     this._speedBeforeHireMode = { paused:this.paused, speedMult:this.speedMult };
     this.paused = true;
-    const bar = document.getElementById("hirePlaceBar");
-    document.getElementById("hpTitle").textContent = st.def.symbol+" "+st.name;
-    document.getElementById("hpDetail").textContent = "Tap a room to assign them";
-    bar.style.display = "flex";
+    this._syncPauseOverlay();
     this._syncCancelBtn();
     this.pushToast(st.name+" hired - tap a room to assign them.", "good");
     this.save();
@@ -3849,7 +3948,7 @@ class Game{
       this.speedMult = this._speedBeforeHireMode.speedMult;
       const sp = this.paused ? "0" : String(this.speedMult);
       document.querySelectorAll(".speedBtn").forEach(b=>b.classList.toggle("active", b.dataset.speed===sp));
-      document.getElementById("pauseOverlay").classList.toggle("show", this.paused);
+      this._syncPauseOverlay();
       this._speedBeforeHireMode = null;
     }
   }
@@ -3865,7 +3964,6 @@ class Game{
       }
     }
     this.hireMode = null;
-    document.getElementById("hirePlaceBar").style.display = "none";
     this._syncCancelBtn();
     this._resumeAfterHireMode();
   }
@@ -4283,9 +4381,14 @@ class Game{
 
     const diagnosticOthers = Object.keys(ROOM_TYPES).filter(k=>ROOM_TYPES[k].category==="diagnostic" && k!=="consultation" && ROOM_TREE_LAYOUT[k]);
     const treatmentLike = Object.keys(ROOM_TYPES).filter(k=>(ROOM_TYPES[k].category==="treatment"||ROOM_TYPES[k].category==="clinic") && ROOM_TREE_LAYOUT[k]);
-    const edges = [["reception","consultation"]];
-    diagnosticOthers.forEach(k=>{ edges.push(["consultation",k]); });
-    treatmentLike.forEach(k=>{ edges.push(["consultation",k]); });
+    // Two different kinds of edge, styled differently (design feedback: everything after
+    // Consultation looked like one flat, undifferentiated level, but the real flow isn't
+    // symmetric): diagnostic rooms are a side-loop patients bounce back to Consultation from
+    // (dashed, no strong arrowhead - "you might come back here"), while treatment/clinic rooms
+    // are the one-way final destination once actually diagnosed (solid, arrowhead pointing at
+    // the room - "this is where the visit ends").
+    const loopEdges = diagnosticOthers.map(k=>["consultation",k]);
+    const finalEdges = [["reception","consultation"], ...treatmentLike.map(k=>["consultation",k])];
 
     const NW=120, NH=44; // node box size, must match .roomTreeNode's CSS width + approx height
     let maxX=0, maxY=0;
@@ -4293,19 +4396,38 @@ class Game{
     svg.setAttribute("width", maxX+40);
     svg.setAttribute("height", maxY+40);
     svg.innerHTML = "";
-    edges.forEach(([a,b])=>{
+
+    const defs = document.createElementNS("http://www.w3.org/2000/svg","defs");
+    const marker = document.createElementNS("http://www.w3.org/2000/svg","marker");
+    marker.setAttribute("id","treeArrow"); marker.setAttribute("viewBox","0 0 10 10");
+    marker.setAttribute("refX","8"); marker.setAttribute("refY","5");
+    marker.setAttribute("markerWidth","7"); marker.setAttribute("markerHeight","7");
+    marker.setAttribute("orient","auto-start-reverse");
+    const arrowPath = document.createElementNS("http://www.w3.org/2000/svg","path");
+    arrowPath.setAttribute("d","M0,0 L10,5 L0,10 z"); arrowPath.setAttribute("fill","#c98a4a");
+    marker.appendChild(arrowPath);
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+
+    // draws a line stopping short of the target node's edge (rather than its exact center) so
+    // the arrowhead lands just outside the box instead of hiding behind it
+    const drawEdge = (a,b,opts)=>{
       const pa = ROOM_TREE_LAYOUT[a], pb = ROOM_TREE_LAYOUT[b];
       if(!pa || !pb) return;
+      const cax=pa.x+NW/2, cay=pa.y+NH/2, cbx=pb.x+NW/2, cby=pb.y+NH/2;
+      const dx=cbx-cax, dy=cby-cay, dist=Math.hypot(dx,dy)||1;
+      const pullBack = opts.arrow ? NW*0.42 : 0; // shorten only the arrowed (final) edges
+      const ex = cbx-(dx/dist)*pullBack, ey = cby-(dy/dist)*pullBack;
       const line = document.createElementNS("http://www.w3.org/2000/svg","line");
-      // Connect true box centers (design feedback: lines used to leave from the bottom of one
-      // box and arrive at the top of the next, which looked scattered/off-angle whenever nodes
-      // weren't neatly stacked vertically) - a plain center-to-center line always reads cleanly
-      // regardless of the two nodes' relative position.
-      line.setAttribute("x1", pa.x+NW/2); line.setAttribute("y1", pa.y+NH/2);
-      line.setAttribute("x2", pb.x+NW/2); line.setAttribute("y2", pb.y+NH/2);
-      line.setAttribute("stroke", "#b9c2a8"); line.setAttribute("stroke-width", "2");
+      line.setAttribute("x1", cax); line.setAttribute("y1", cay);
+      line.setAttribute("x2", ex); line.setAttribute("y2", ey);
+      line.setAttribute("stroke", opts.color); line.setAttribute("stroke-width", opts.width);
+      if(opts.dash) line.setAttribute("stroke-dasharray", opts.dash);
+      if(opts.arrow) line.setAttribute("marker-end", "url(#treeArrow)");
       svg.appendChild(line);
-    });
+    };
+    loopEdges.forEach(([a,b])=> drawEdge(a,b,{color:"#b9c2a8", width:1.5, dash:"5,4", arrow:false}));
+    finalEdges.forEach(([a,b])=> drawEdge(a,b,{color:"#c98a4a", width:2.5, dash:null, arrow:true}));
 
     Object.keys(ROOM_TREE_LAYOUT).forEach(type=>{
       const def = ROOM_TYPES[type];
@@ -4323,7 +4445,7 @@ class Game{
         subText = instances.length+" built"+(totalQueue>0?" · "+totalQueue+" waiting":"");
       }
       node.style.borderColor = borderColor;
-      node.innerHTML = `<span class="ttl">${def.name}</span><span class="sub">${subText}</span>`;
+      node.innerHTML = `<span class="ttl">${def.name}</span><span class="sub">${subText}</span><span class="hint">${ROOM_TREE_LAYOUT[type].hint||""}</span>`;
       inner.appendChild(node);
     });
   }
@@ -4872,9 +4994,19 @@ class Game{
       }
     });
     room.staffIds = []; room.queue = [];
-    // Demolition takes a few seconds too - staff/patients are evacuated immediately (above) so
-    // nobody is stranded, but the room itself lingers (blocked off, rendered as rubble) until
-    // Game._updateConstruction actually removes it and frees up the footprint.
+    // Demolition normally takes a few seconds so it can't be used to instantly free up space
+    // mid-game - but during the initial setup phase (before the player has pressed ▶ and
+    // patients start arriving), there's no gameplay reason to make them wait: they're just
+    // repositioning a room they haven't even started using yet.
+    if(!this.hasStartedPlaying){
+      this.hospital.rooms = this.hospital.rooms.filter(r=>r.id!==roomId);
+      this.hospital._rebuildBlocked();
+      this.economy.earn(Math.floor(def.cost*0.4));
+      this.pushToast(def.name+" demolished.", "good");
+      this.closeAllPanels();
+      this.save();
+      return;
+    }
     room._demolishing = true;
     room._demolishTimer = CONSTRUCTION_SECONDS;
     this.economy.earn(Math.floor(def.cost*0.4)); // partial refund
@@ -5850,8 +5982,13 @@ class Game{
               } else {
                 p.happiness -= 15;
                 // ignoring the "you need this room" alert has a real, if modest, cost now -
-                // previously a patient could be turned away indefinitely with zero consequence
+                // previously a patient could be turned away indefinitely with zero consequence.
+                // Also now explicit about WHY (design feedback: "patients seem to get treated
+                // but never pay" - they weren't actually being treated at all, there was just no
+                // built+staffed room of the type their disease needed, and they silently gave up
+                // with no visible explanation).
                 this.hospitalReputation = clamp(this.hospitalReputation - 1, 0, 100);
+                this.pushToast(p.name+" left unpaid - no working "+(ROOM_TYPES[after.roomType]?ROOM_TYPES[after.roomType].name:after.roomType)+" for their condition.", "bad");
                 p.state="leaving"; this._sendToExit(p);
               }
             }
@@ -6659,7 +6796,7 @@ class Game{
           const def = ROOM_TYPES[room.type];
           const base = ((x+y)%2===0)? def.color : def.darkColor;
           ctx.fillStyle = shadeForCondition(base, room.condition);
-        } else if(!inHospitalFootprint(x,y,1,1)){
+        } else if(!this.hospital.inFootprint(x,y,1,1)){
           // Outside the T-shaped hospital grounds entirely (the "cut corners" of the map) -
           // filled with the same textured grass pattern as the exterior beyond the map edges
           // (design feedback: this used to be a flat, slightly different green that didn't
@@ -6882,42 +7019,62 @@ class Game{
   // behind it. One gap, at the entrance, is where every patient and every delivery comes through.
   _pushBoundaryWalls(drawables){
     const color = "#5f5648";
-    const ent = this.hospital.entrance;
-    const BAR = HOSPITAL_BAR, STEM = HOSPITAL_STEM;
-    // North wall (top of the crossbar, full width)
-    for(let x=BAR.x0;x<BAR.x1;x++){
-      drawables.push({ depth: x+0.5+BAR.y0, fn:(ctx)=>wallQuad(ctx,x,BAR.y0,x+1,BAR.y0,color,WALL_H_OUTER) });
+    const H = this.hospital;
+    const bar = H.bar, stem = H.stem, ent = H.entrance;
+    // Horizontal wall run (fixed row, spanning x0..x1), optionally skipping a gap range
+    // (the entrance, when it's on this particular wall).
+    const hRun = (x0,x1,y,gap)=>{
+      for(let x=x0;x<x1;x++){
+        if(gap && x>=gap.x0 && x<gap.x1) continue;
+        drawables.push({ depth: x+0.5+y, fn:(ctx)=>wallQuad(ctx,x,y,x+1,y,color,WALL_H_OUTER) });
+      }
+    };
+    // Vertical wall run (fixed column, spanning y0..y1), same gap-skipping idea.
+    const vRun = (x,y0,y1,gap)=>{
+      for(let y=y0;y<y1;y++){
+        if(gap && y>=gap.y0 && y<gap.y1) continue;
+        drawables.push({ depth: x+y+0.5, fn:(ctx)=>wallQuad(ctx,x,y,x,y+1,color,WALL_H_OUTER) });
+      }
+    };
+    const dir = H.direction;
+    const hGap = ent.axis==="h" ? ent : null, vGap = ent.axis==="v" ? ent : null;
+
+    if(dir==="down" || dir==="up"){
+      const barFarY = dir==="down" ? bar.y0 : bar.y1;   // the bar's outer edge, away from the stem
+      const seamY = dir==="down" ? bar.y1 : bar.y0;      // where bar meets stem
+      const stemFarY = dir==="down" ? stem.y1 : stem.y0; // the stem's outer edge (entrance wall)
+      hRun(bar.x0, bar.x1, barFarY);                     // bar's outer long wall
+      vRun(bar.x0, bar.y0, bar.y1);                       // bar left
+      vRun(bar.x1, bar.y0, bar.y1);                       // bar right
+      hRun(bar.x0, stem.x0, seamY);                        // left shoulder
+      hRun(stem.x1, bar.x1, seamY);                        // right shoulder
+      vRun(stem.x0, stem.y0, stem.y1);                      // stem left
+      vRun(stem.x1, stem.y0, stem.y1);                      // stem right
+      hRun(stem.x0, stem.x1, stemFarY, hGap);                // stem outer wall, with entrance gap
+    } else {
+      const barFarX = dir==="right" ? bar.x0 : bar.x1;
+      const seamX = dir==="right" ? bar.x1 : bar.x0;
+      const stemFarX = dir==="right" ? stem.x1 : stem.x0;
+      vRun(barFarX, bar.y0, bar.y1);
+      hRun(bar.x0, bar.x1, bar.y0);
+      hRun(bar.x0, bar.x1, bar.y1);
+      vRun(seamX, bar.y0, stem.y0);
+      vRun(seamX, stem.y1, bar.y1);
+      hRun(stem.x0, stem.x1, stem.y0);
+      hRun(stem.x0, stem.x1, stem.y1);
+      vRun(stemFarX, stem.y0, stem.y1, vGap);
     }
-    // West/east walls of the crossbar, down to where the stem branches off
-    for(let y=BAR.y0;y<BAR.y1;y++){
-      drawables.push({ depth: BAR.x0+y+0.5, fn:(ctx)=>wallQuad(ctx,BAR.x0,y,BAR.x0,y+1,color,WALL_H_OUTER) });
+
+    // door + small sign, at whichever tile the entrance actually ended up on
+    const doorMidX = ent.axis==="h" ? (ent.x0+ent.x1)/2 : ent.x0;
+    const doorMidY = ent.axis==="v" ? (ent.y0+ent.y1)/2 : ent.y0;
+    if(ent.axis==="h"){
+      drawables.push({ depth: doorMidX+ent.y0, fn:(ctx)=>drawDoorOnWall(ctx,ent.x0,ent.y0,ent.x1,ent.y0,WALL_H_OUTER) });
+    } else {
+      drawables.push({ depth: ent.x0+doorMidY, fn:(ctx)=>drawDoorOnWall(ctx,ent.x0,ent.y0,ent.x0,ent.y1,WALL_H_OUTER) });
     }
-    for(let y=BAR.y0;y<BAR.y1;y++){
-      drawables.push({ depth: BAR.x1+y+0.5, fn:(ctx)=>wallQuad(ctx,BAR.x1,y,BAR.x1,y+1,color,WALL_H_OUTER) });
-    }
-    // The two "shoulders" - where the crossbar overhangs the narrower stem on each side
-    for(let x=BAR.x0;x<STEM.x0;x++){
-      drawables.push({ depth: x+0.5+BAR.y1, fn:(ctx)=>wallQuad(ctx,x,BAR.y1,x+1,BAR.y1,color,WALL_H_OUTER) });
-    }
-    for(let x=STEM.x1;x<BAR.x1;x++){
-      drawables.push({ depth: x+0.5+BAR.y1, fn:(ctx)=>wallQuad(ctx,x,BAR.y1,x+1,BAR.y1,color,WALL_H_OUTER) });
-    }
-    // West/east walls of the stem, down to the entrance
-    for(let y=STEM.y0;y<STEM.y1;y++){
-      drawables.push({ depth: STEM.x0+y+0.5, fn:(ctx)=>wallQuad(ctx,STEM.x0,y,STEM.x0,y+1,color,WALL_H_OUTER) });
-    }
-    for(let y=STEM.y0;y<STEM.y1;y++){
-      drawables.push({ depth: STEM.x1+y+0.5, fn:(ctx)=>wallQuad(ctx,STEM.x1,y,STEM.x1,y+1,color,WALL_H_OUTER) });
-    }
-    // South wall (bottom of the stem), with the one gap where everyone comes in and out
-    for(let x=STEM.x0;x<STEM.x1;x++){
-      if(x>=ent.x0 && x<ent.x1) continue; // the one gap
-      drawables.push({ depth: x+0.5+STEM.y1, fn:(ctx)=>wallQuad(ctx,x,STEM.y1,x+1,STEM.y1,color,WALL_H_OUTER) });
-    }
-    drawables.push({ depth: (ent.x0+ent.x1)/2+STEM.y1, fn:(ctx)=>drawDoorOnWall(ctx,ent.x0,STEM.y1,ent.x1,STEM.y1,WALL_H_OUTER) });
-    // small sign above the entrance
-    drawables.push({ depth: (ent.x0+ent.x1)/2+STEM.y1+0.5, fn:(ctx)=>{
-      const p = gridToScreen((ent.x0+ent.x1)/2, STEM.y1);
+    drawables.push({ depth: doorMidX+doorMidY+0.5, fn:(ctx)=>{
+      const p = gridToScreen(doorMidX, doorMidY);
       ctx.font="16px sans-serif"; ctx.textAlign="center";
       ctx.fillText("🏥", p.x, p.y-WALL_H_OUTER-4);
     }});

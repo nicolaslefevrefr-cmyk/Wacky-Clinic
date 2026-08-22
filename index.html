@@ -41,21 +41,23 @@
 
 <div id="ui">
   <div id="hud-top-wrap">
-    <div class="ui-layer" id="hud-top">
+    <div class="ui-layer" id="hud-top-row1">
       <div class="hud-chip money clickable" id="hMoneyChip" data-metric="money">💰 <span id="hMoney">0</span> $</div>
       <div class="hud-chip clickable" id="hPatientsChip" data-metric="patients">👥 <span id="hPatients">0</span></div>
       <div class="hud-chip clickable" id="hHealthChip" data-metric="health">🏥 <span id="hHealth">100</span>%</div>
       <div class="hud-chip clickable" id="hRepChip" data-metric="reputation">⭐ <span id="hRep">70</span>%</div>
       <div class="hud-chip" id="hDayChip">📅 Day <span id="hDay">1</span></div>
       <div id="hud-spacer"></div>
+      <button id="settingsBtn">⚙</button>
+    </div>
+    <div class="ui-layer" id="hud-top-row2">
       <div id="speedControls">
         <button class="speedBtn active" data-speed="0">⏸</button>
         <button class="speedBtn" data-speed="1">▶</button>
         <button class="speedBtn" data-speed="2">▶▶</button>
       </div>
-      <button id="settingsBtn">⚙</button>
+      <div id="hud-spacer2"></div>
       <button id="alertsBtn">🔔 Alerts <span class="count" id="alertsCount">0</span></button>
-      <button id="objectivesBtn">🎯 Objectives</button>
     </div>
 
     <div id="msgBanner">
@@ -98,6 +100,8 @@
       <span><i style="background:#e8b13c;"></i>Busy</span>
       <span><i style="background:#c0473a;"></i>Overloaded</span>
       <span><i style="background:#ccc;"></i>Not built</span>
+      <span>— → treatment path</span>
+      <span>┄┄ diagnostic loop back to GP</span>
     </div>
   </div>
 
@@ -267,11 +271,6 @@
   <div class="ui-layer" id="furniturePlaceBar" style="display:none;">
     <div class="info"><b id="fpTitle">Item</b><span id="fpDetail">Tap an open floor tile</span></div>
     <button class="panelBtn ghost" id="fpCancel">Cancel</button>
-  </div>
-
-  <div class="ui-layer" id="hirePlaceBar" style="display:none;">
-    <div class="info"><b id="hpTitle">New hire</b><span id="hpDetail">Tap a room to assign them</span></div>
-    <button class="panelBtn ghost" id="hpCancel">Cancel</button>
   </div>
 
   <div class="ui-layer" id="hud-bottom">
