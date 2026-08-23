@@ -5,7 +5,7 @@
    0. CONSTANTS
    ========================================================================= */
 const TILE = 32;
-const GAME_VERSION = "1.7.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
+const GAME_VERSION = "1.8.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
 const CONSTRUCTION_SECONDS = 5; // how long a build/demolish/hire takes to actually complete (design feedback: shouldn't be instant)
 // Map is sized to comfortably fit a randomly-generated T-shaped hospital footprint (see
 // Hospital._generateShape) in any of its 4 possible orientations, at roughly 50% more total
@@ -245,7 +245,8 @@ const GAME_DATA = JSON.parse(`{
       "maxH": 5,
       "cost": 700,
       "capacity": 1,
-      "needsDoctor": true,
+      "needsDoctor": false,
+      "needsNurse": true,
       "needsReceptionist": false,
       "desc": "Dispenses remedies.",
       "staffSlot": {
@@ -1984,6 +1985,45 @@ const WAITING_ROOM_RANGE = TILE*GAME_DATA.config.waitingRoomRangeTiles; // how c
 // Given a skill value (1-1000), returns the rank key ("junior"/"doctor"/"consultant") from
 // GAME_DATA.config.staffRanks. Structure-only for now: nothing yet changes a staff member's
 // rank over time, but room-eligibility / hiring UI can already display the right title.
+// Ironic one-liners for the hire browser's candidate profiles (see Game.openHireBrowser),
+// grouped by role. A handful per role, since the candidate list itself is deliberately short.
+const HIRE_QUIPS = {
+  doctor: [
+    "Diagnosed a papercut as \"probably fine\" - was right, eventually.",
+    "Went to medical school. Mostly remembers the cafeteria.",
+    "Believes strongly in the healing power of a confident handshake.",
+    "Once cured a cold with sheer force of eye contact.",
+    "Keeps a rubber chicken in the desk drawer for \"morale\".",
+    "Graduated top of the class. The class had two people.",
+  ],
+  nurse: [
+    "Can find a vein blindfolded. Has never needed to prove it.",
+    "Refers to all patients as \"hun\", regardless of age or title.",
+    "Once organized a whole ward with a color-coded spreadsheet.",
+    "Brings homemade soup on Mondays. It's suspicious. It's also great.",
+    "Has strong opinions about the correct way to fold a bandage.",
+    "Trained a hamster to recognize a fever. It's on the CV.",
+  ],
+  maintenance: [
+    "Fixed a leaking pipe using only optimism and duct tape.",
+    "Claims to have seen things in the ventilation. Won't elaborate.",
+    "Owns 40 different wrenches. Uses the same one for everything.",
+    "Whistles constantly. No one has identified the tune.",
+    "Once repaired a machine that wasn't actually broken. Twice.",
+    "Treats every mop like it owes them money.",
+  ],
+  receptionist: [
+    "Can file a form and judge your life choices simultaneously.",
+    "Has memorized every extension number except the important ones.",
+    "Answers the phone in a voice reserved exclusively for the phone.",
+    "Once made a queue of 40 people feel like old friends.",
+    "Types 110 words per minute, mostly complaints.",
+    "Keeps a stash of mints for patients who \"really need one\".",
+  ],
+};
+// Portrait background colors, cycled per candidate slot for a bit of visual variety without
+// needing actual artwork - a plain colored circle plus the role's emoji reads fine at this size.
+const HIRE_AVATAR_COLORS = ["#e0733f","#4f8fb0","#8fa063","#c0703f","#7c6fb0","#2f8f8a"];
 function rankForSkill(skill){
   for(const key in STAFF_RANKS){
     const r = STAFF_RANKS[key];
@@ -2041,6 +2081,35 @@ function shadeForCondition(hex, condition){
   const n = parseInt(hex.slice(1),16);
   const r = Math.round(((n>>16)&255)*factor), g = Math.round(((n>>8)&255)*factor), b = Math.round((n&255)*factor);
   return "#"+[r,g,b].map(v=>clamp(v,0,255).toString(16).padStart(2,"0")).join("");
+}
+// Boosts saturation (and optionally shifts lightness) of a hex color - used to make each room
+// type's floor/walls read as radically distinct at a glance (design feedback: the original
+// palette was too uniformly pastel/muted to tell rooms apart quickly), without having to
+// manually rewrite all 27 room types' base color definitions by hand.
+function boostColor(hex, satMult, lightDelta){
+  const n = parseInt(hex.slice(1),16);
+  let r=((n>>16)&255)/255, g=((n>>8)&255)/255, b=(n&255)/255;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b);
+  let h=0, s=0, l=(max+min)/2;
+  if(max!==min){
+    const d=max-min;
+    s = l>0.5 ? d/(2-max-min) : d/(max+min);
+    if(max===r) h=(g-b)/d+(g<b?6:0);
+    else if(max===g) h=(b-r)/d+2;
+    else h=(r-g)/d+4;
+    h/=6;
+  }
+  s = clamp(s*(satMult||1), 0, 1);
+  l = clamp(l+(lightDelta||0), 0, 1);
+  const hue2rgb=(p,q,t)=>{ if(t<0)t+=1; if(t>1)t-=1; if(t<1/6) return p+(q-p)*6*t; if(t<1/2) return q; if(t<2/3) return p+(q-p)*(2/3-t)*6; return p; };
+  let r2,g2,b2;
+  if(s===0){ r2=g2=b2=l; } else {
+    const q = l<0.5? l*(1+s) : l+s-l*s;
+    const p = 2*l-q;
+    r2=hue2rgb(p,q,h+1/3); g2=hue2rgb(p,q,h); b2=hue2rgb(p,q,h-1/3);
+  }
+  const toHex=(v)=>clamp(Math.round(v*255),0,255).toString(16).padStart(2,"0");
+  return "#"+toHex(r2)+toHex(g2)+toHex(b2);
 }
 
 /* =========================================================================
@@ -2720,6 +2789,11 @@ class Staff extends MovingEntity{
     this.specialty = specialty || this.def.specialty || null;
     this.energy = 100;
     this.thirst = Math.random()*20;
+    // How workaholic vs break-prone this hire is (see openHireBrowser's candidate profiles,
+    // and Game._isDueForRest which actually uses it) - 0 = takes frequent breaks, 100 = rarely
+    // stops. Randomized here as a fallback for any staff created outside the hire browser
+    // (legacy hireStaff calls, save-file staff, etc); the browser overrides it per candidate.
+    this.workEthic = 30+Math.random()*50;
     this.state = "idle"; // idle -> toWork -> enteringRoom -> idle(at slot) -> working -> toRest -> resting
     this.assignedRoomId = null;
     this.stateTimer = 0;
@@ -2791,9 +2865,12 @@ function wallQuad(ctx, gx1,gy1, gx2,gy2, color, height){
   ctx.strokeStyle="rgba(255,255,255,.25)"; ctx.lineWidth=1.4;
   ctx.beginPath(); ctx.moveTo(gA.x,gA.y-height); ctx.lineTo(gB.x,gB.y-height); ctx.stroke();
 }
-function drawDoorOnWall(ctx, gx1,gy1, gx2,gy2, height){
-  // just the frame (posts + lintel) - no drawn leaf, the opening plus frame already reads clearly
+function drawDoorOnWall(ctx, gx1,gy1, gx2,gy2, height, openAmount){
+  // just the frame (posts + lintel) always visible; the leaf itself (below) slides up into the
+  // header as someone approaches, instead of swinging - a vertical slide stays trivially
+  // correct in this isometric projection without needing perspective-correct rotation math.
   height = height || WALL_H;
+  openAmount = clamp(openAmount||0, 0, 1);
   const gA = gridToScreen(gx1,gy1), gB = gridToScreen(gx2,gy2);
   ctx.fillStyle="#5a3d22";
   ctx.fillRect(gA.x-1.5, gA.y-height, 3, height);
@@ -2803,6 +2880,20 @@ function drawDoorOnWall(ctx, gx1,gy1, gx2,gy2, height){
   ctx.moveTo(gA.x, gA.y-height); ctx.lineTo(gB.x, gB.y-height);
   ctx.lineTo(gB.x, gB.y-height+6); ctx.lineTo(gA.x, gA.y-height+6);
   ctx.closePath(); ctx.fill();
+  const openingH = height-6;
+  const leafH = openingH*(1-openAmount);
+  if(leafH > 0.6){
+    const topOffset = height-6; // fixed at the header, regardless of how open the door is
+    ctx.fillStyle = "#8a6239";
+    ctx.beginPath();
+    ctx.moveTo(gA.x, gA.y-topOffset); ctx.lineTo(gB.x, gB.y-topOffset);
+    ctx.lineTo(gB.x, gB.y-topOffset+leafH); ctx.lineTo(gA.x, gA.y-topOffset+leafH);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,.22)"; ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo((gA.x+gB.x)/2, gA.y-topOffset); ctx.lineTo((gA.x+gB.x)/2, gA.y-topOffset+leafH);
+    ctx.stroke();
+  }
 }
 function drawHiddenDoorMarker(ctx, gx1,gy1, gx2,gy2){
   const gA = gridToScreen(gx1,gy1), gB = gridToScreen(gx2,gy2);
@@ -3053,6 +3144,7 @@ class Game{
     this.activeAlerts = new Map();
     this.showPaths = false;
     this.showHiddenWalls = true;
+    this.showRoomNames = true;
     // Policy screen (Theme Hospital): three levers the player can tune, each with a real
     // gameplay effect - see _applyDiagnosisTerminationPolicy / the staff idle-rest check /
     // _applyStaffLeaveRoomsPolicy.
@@ -3179,7 +3271,7 @@ class Game{
       messes:this.hospital.messes.map(m=>({id:m.id,x:m.x,y:m.y,tileX:m.tileX,tileY:m.tileY,type:m.type,patientId:m.patientId})),
       day:this.day, simTime:this.simTime,
       rooms:this.hospital.rooms.map(r=>({id:r.id,type:r.type,x:r.x,y:r.y,w:r.w,h:r.h,level:r.level,doorSide:r.doorSide,patientsServed:r.patientsServed,condition:r.condition,machineDurability:r.machineDurability,machineBroken:r.machineBroken,_constructing:r._constructing,_constructionTimer:r._constructionTimer,_demolishing:r._demolishing,_demolishTimer:r._demolishTimer,lastServedAt:r.lastServedAt,windows:r.windows})),
-      staff:this.staff.map(s=>({id:s.id,type:s.type,name:s.name,x:s.x,y:s.y,skill:s.skill,skillPoints:s.skillPoints,specialty:s.specialty,energy:s.energy,assignedRoomId:s.assignedRoomId,thirst:s.thirst,pendingHire:s.pendingHire,pendingHireTimer:s.pendingHireTimer})),
+      staff:this.staff.map(s=>({id:s.id,type:s.type,name:s.name,x:s.x,y:s.y,skill:s.skill,skillPoints:s.skillPoints,specialty:s.specialty,energy:s.energy,assignedRoomId:s.assignedRoomId,thirst:s.thirst,pendingHire:s.pendingHire,pendingHireTimer:s.pendingHireTimer,workEthic:s.workEthic,hourlyCostMult:s.hourlyCostMult})),
       patients:this.patients.map(p=>({id:p.id,name:p.name,age:p.age,diseaseKey:p.diseaseKey,health:p.health,happiness:p.happiness,x:p.x,y:p.y,state:p.state,diagnosisProgress:p.diagnosisProgress,thirst:p.thirst,isEmergency:p.isEmergency,diagnosed:p.diagnosed,diagnosisConfidence:p.diagnosisConfidence,diagnosisAttempts:p.diagnosisAttempts,milkedCount:p.milkedCount,deadTimer:p.deadTimer}))
     };
   }
@@ -3234,6 +3326,8 @@ class Game{
       st.id = s.id; st.name=s.name; st.skill=s.skill; st.energy=s.energy;
       if(s.skillPoints!=null){ st.skillPoints = s.skillPoints; st.rank = rankForSkill(st.skillPoints); }
       st.thirst = s.thirst||0;
+      if(s.workEthic!=null) st.workEthic = s.workEthic;
+      if(s.hourlyCostMult!=null) st.hourlyCostMult = s.hourlyCostMult;
       st.pendingHire = !!s.pendingHire;
       st.pendingHireTimer = s.pendingHireTimer||0;
       st.assignedRoomId = s.assignedRoomId;
@@ -3447,8 +3541,7 @@ class Game{
         if(this._speedBeforeChoice){
           this.paused = this._speedBeforeChoice.paused;
           this.speedMult = this._speedBeforeChoice.speedMult;
-          const sp = this.paused ? "0" : String(this.speedMult);
-          document.querySelectorAll(".speedBtn").forEach(b=>b.classList.toggle("active", b.dataset.speed===sp));
+          this._syncPlayPauseBtn();
           this._speedBeforeChoice = null;
         }
         c.action();
@@ -3770,9 +3863,11 @@ class Game{
     this._refreshBuildList();
     this._refreshFurnitureList();
 
-    // hire list
+    // hire list - only Researcher stays here (design feedback moved doctor/nurse/janitor/
+    // receptionist to the new face-browser hire window below); the "Browse Profiles" button
+    // above this list is what actually opens that for the other four roles.
     const hireList = document.getElementById("hireList");
-    Object.keys(STAFF_TYPES).forEach(key=>{
+    Object.keys(STAFF_TYPES).filter(k=>k==="researcher").forEach(key=>{
       const def = STAFF_TYPES[key];
       const el = document.createElement("div");
       el.className="roomOption";
@@ -3850,6 +3945,29 @@ class Game{
       this._staffSortKey = e.target.value;
       this._refreshStaffRoster();
     });
+    document.getElementById("btnBrowseProfiles").addEventListener("click", ()=>this.openHireBrowser());
+    document.querySelectorAll(".hireRoleBtn").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        this._hireBrowserRole = btn.dataset.role;
+        this._hireBrowserIndex = 0;
+        this._renderHireRoleColumn();
+        this._renderHireProfile();
+      });
+    });
+    document.getElementById("hirePrevBtn").addEventListener("click", ()=>{
+      const list = this._hireCandidates[this._hireBrowserRole];
+      this._hireBrowserIndex = (this._hireBrowserIndex-1+list.length)%list.length;
+      this._renderHireProfile();
+    });
+    document.getElementById("hireNextBtn").addEventListener("click", ()=>{
+      const list = this._hireCandidates[this._hireBrowserRole];
+      this._hireBrowserIndex = (this._hireBrowserIndex+1)%list.length;
+      this._renderHireProfile();
+    });
+    document.getElementById("hireCancelBtn").addEventListener("click", ()=>{
+      document.getElementById("panelHireBrowser").classList.remove("show");
+    });
+    document.getElementById("hireConfirmBtn").addEventListener("click", ()=>this._hireFromBrowser());
     document.getElementById("patientSortSelect").addEventListener("change", (e)=>{
       this._patientSortKey = e.target.value;
       this._refreshPatientsRoster();
@@ -3871,6 +3989,10 @@ class Game{
     document.getElementById("toggleHiddenWalls").addEventListener("click", (e)=>{
       this.showHiddenWalls = !this.showHiddenWalls;
       e.currentTarget.classList.toggle("on", this.showHiddenWalls);
+    });
+    document.getElementById("toggleRoomNames").addEventListener("click", (e)=>{
+      this.showRoomNames = !this.showRoomNames;
+      e.currentTarget.classList.toggle("on", this.showRoomNames);
     });
 
     document.getElementById("mgOpenPolicy").addEventListener("click", ()=>this.togglePanel("panelPolicy","mgOpenPolicy"));
@@ -3958,19 +4080,17 @@ class Game{
       reader.readAsText(file);
     });
 
-    document.querySelectorAll(".speedBtn").forEach(btn=>{
-      btn.addEventListener("click", ()=>{
-        document.querySelectorAll(".speedBtn").forEach(b=>b.classList.remove("active"));
-        btn.classList.add("active");
-        const sp = parseInt(btn.dataset.speed,10);
-        this.paused = sp===0;
-        this.speedMult = sp===0? 1: sp;
-        this._syncPauseOverlay();
-        if(sp>0 && !this.hasStartedPlaying){
-          this.hasStartedPlaying = true;
-          this.pushToast("Patients are starting to arrive!", "good");
-        }
-      });
+    // Single Play/Pause toggle (design feedback: only one speed - normal 1x - so a 3-button
+    // speed picker was pointless; this just flips paused on/off and swaps the icon).
+    document.getElementById("playPauseBtn").addEventListener("click", ()=>{
+      this.paused = !this.paused;
+      this.speedMult = 1;
+      this._syncPlayPauseBtn();
+      this._syncPauseOverlay();
+      if(!this.paused && !this.hasStartedPlaying){
+        this.hasStartedPlaying = true;
+        this.pushToast("Patients are starting to arrive!", "good");
+      }
     });
 
     // start screen
@@ -4011,6 +4131,15 @@ class Game{
   _syncPauseOverlay(){
     document.getElementById("pauseOverlay").classList.toggle("show", this.paused && this.hasStartedPlaying);
   }
+  // Keeps the single Play/Pause button's icon and active state in sync with this.paused -
+  // shared by every code path that can change the pause state out from under the button click
+  // handler itself (choice modals, hire mode, etc).
+  _syncPlayPauseBtn(){
+    const btn = document.getElementById("playPauseBtn");
+    if(!btn) return;
+    btn.textContent = this.paused ? "▶" : "⏸";
+    btn.classList.toggle("active", this.paused);
+  }
 
   // Step 1 of hiring (design feedback: shouldn't auto-place someone in a random room). Creates
   // the staff member immediately (cost is spent right away) but marks them `pendingHire` - they
@@ -4021,27 +4150,36 @@ class Game{
   // picked or the hire is cancelled - see _resumeAfterHireMode. The "tap a room" prompt reuses
   // the same small top ✕ Cancel button as build/furniture placement, instead of its own
   // separate bottom message bar - the toast below already says what to do.
-  beginHirePlacement(type, specialty){
+  // Shared by both hire entry points (the plain beginHirePlacement flow and the new profile
+  // browser below) - actually spends the money, creates the Staff, and either drops them
+  // straight into the roster (janitors, who don't need a room) or starts the tap-a-room
+  // placement flow. `overrides` lets the browser stamp a specific candidate's name/work-ethic/
+  // cost/skill onto the new hire instead of the plain random defaults.
+  _finalizeHire(type, specialty, overrides){
     const def = STAFF_TYPES[type];
-    if(!this.economy.canAfford(def.cost)){ this.pushToast("Not enough money to hire.", "bad", true); return; }
+    if(!this.economy.canAfford(def.cost)){ this.pushToast("Not enough money to hire.", "bad", true); return null; }
     this.economy.spend(def.cost);
     const homeRoom = this.hospital.roomsOfType("staffroom")[0] || this.hospital.roomsOfType("reception")[0];
     const pos = homeRoom? this.hospital.roomCenterWorld(homeRoom) : {x:MAP_W*TILE/2,y:MAP_H*TILE/2};
     const st = new Staff(type, pos.x, pos.y, specialty||null);
+    if(overrides){
+      if(overrides.name) st.name = overrides.name;
+      if(overrides.workEthic!=null) st.workEthic = overrides.workEthic;
+      if(overrides.hourlyCostMult!=null) st.hourlyCostMult = overrides.hourlyCostMult;
+      if(overrides.skillPoints!=null){ st.skillPoints = overrides.skillPoints; st.rank = rankForSkill(st.skillPoints); }
+    }
     // Handymen aren't assigned to a specific room at all (design feedback: they patrol the
     // whole hospital on their own, unlike every other role) - skip the room-placement step
     // entirely and just add them straight to the roster, already working.
     if(type==="maintenance"){
       this.staff.push(st);
-      this.closeAllPanels();
       this.pushToast(st.name+" hired and is patrolling the hospital.", "good");
       this.save();
-      return;
+      return st;
     }
     st.pendingHire = true;
     this.staff.push(st);
     this.hireMode = {staffId: st.id};
-    this.closeAllPanels();
     // Remember exactly how the game was running (paused or which speed) so it can resume to the
     // same state afterward, instead of always landing back on Pause.
     this._speedBeforeHireMode = { paused:this.paused, speedMult:this.speedMult };
@@ -4054,6 +4192,11 @@ class Game{
     this._syncCancelBtn();
     this.pushToast(st.name+" hired - tap a room to assign them.", "good");
     this.save();
+    return st;
+  }
+  beginHirePlacement(type, specialty){
+    this.closeAllPanels();
+    this._finalizeHire(type, specialty, null);
   }
   // Restores whatever speed/pause state was active right before beginHirePlacement, called once
   // the room has been picked (success) or the hire was cancelled - either way, hiring someone
@@ -4062,10 +4205,93 @@ class Game{
     if(this._speedBeforeHireMode){
       this.paused = this._speedBeforeHireMode.paused;
       this.speedMult = this._speedBeforeHireMode.speedMult;
-      const sp = this.paused ? "0" : String(this.speedMult);
-      document.querySelectorAll(".speedBtn").forEach(b=>b.classList.toggle("active", b.dataset.speed===sp));
+      this._syncPlayPauseBtn();
       this._syncPauseOverlay();
       this._speedBeforeHireMode = null;
+    }
+  }
+  // Rolls a fresh batch of candidate profiles for one role (design feedback: the hire browser's
+  // list should stay short - a handful of profiles, not an endless scroll). Doctors mix in the
+  // two specialist tracks (psychiatrist/surgeon) among the plain generalists, since choosing a
+  // specialist IS one of the profiles now rather than a separate toggle.
+  _generateHireCandidates(role, count){
+    count = count||4;
+    const def = STAFF_TYPES[role];
+    const quips = HIRE_QUIPS[role] || HIRE_QUIPS.doctor;
+    const specialtyPool = role==="doctor" ? [null, null, "psychiatrist", "surgeon"] : [null];
+    const list = [];
+    for(let i=0;i<count;i++){
+      const specialty = specialtyPool[i % specialtyPool.length];
+      list.push({
+        name: def.name+" "+choice(["Martin","Cole","Rossi","Nkomo","Chen","Garcia","Dubois","Haddad","Okafor","Kowalski"]),
+        specialty,
+        workEthic: Math.round(15 + Math.random()*80),
+        costMult: 0.75 + Math.random()*0.6,
+        quip: quips[Math.floor(Math.random()*quips.length)],
+        avatarColor: choice(HIRE_AVATAR_COLORS),
+        skillPoints: role==="doctor"
+          ? clamp(Math.round(1+Math.random()*999), 1, 1000)
+          : clamp(Math.round((def.skill||400)+(Math.random()*200-100)), 1, 1000),
+      });
+    }
+    return list;
+  }
+  // Opens the face-browser hire window (design feedback): a role column on the left, a
+  // scrollable candidate profile on the right - portrait, name, a work-ethic bar, hourly cost,
+  // and a short flavor line - with prev/next to page through the (deliberately short) list.
+  openHireBrowser(){
+    this._hireCandidates = this._hireCandidates || {};
+    this._hireBrowserRole = this._hireBrowserRole || "doctor";
+    this._hireBrowserIndex = this._hireBrowserIndex || 0;
+    ["doctor","nurse","maintenance","receptionist"].forEach(role=>{
+      if(!this._hireCandidates[role]) this._hireCandidates[role] = this._generateHireCandidates(role);
+    });
+    this.closeAllPanels();
+    this._renderHireRoleColumn();
+    this._renderHireProfile();
+    document.getElementById("panelHireBrowser").classList.add("show");
+  }
+  _renderHireRoleColumn(){
+    document.querySelectorAll(".hireRoleBtn").forEach(b=>{
+      b.classList.toggle("active", b.dataset.role===this._hireBrowserRole);
+    });
+  }
+  _renderHireProfile(){
+    const role = this._hireBrowserRole;
+    const list = this._hireCandidates[role];
+    const idx = clamp(this._hireBrowserIndex, 0, list.length-1);
+    this._hireBrowserIndex = idx;
+    const c = list[idx];
+    const def = STAFF_TYPES[role];
+    const surcharge = c.specialty && SPECIALTIES[c.specialty] ? SPECIALTIES[c.specialty].salarySurcharge : 0;
+    const dailyCost = Math.round(def.salary*c.costMult) + surcharge;
+    const hourly = Math.max(1, Math.round(dailyCost/8));
+    const specLabel = c.specialty ? " · "+c.specialty[0].toUpperCase()+c.specialty.slice(1) : "";
+    document.getElementById("hireProfileCard").innerHTML = `
+      <div class="hireAvatar" style="background:${c.avatarColor};">${def.symbol}</div>
+      <div class="hireName">${c.name}${specLabel}</div>
+      <div class="hireStatRow"><span>Break-loving</span><span>Workaholic</span></div>
+      <div class="hireEthicBar"><div class="hireEthicFill" style="left:${c.workEthic}%;"></div></div>
+      <div style="height:8px;"></div>
+      <div class="hireStatRow"><span>Hourly cost</span><b>$${hourly}/hr</b></div>
+      <div class="hireStatRow"><span>Hire cost</span><b>${fmtMoney(def.cost)} $</b></div>
+      <div class="hireQuip">"${c.quip}"</div>
+      <div class="hireDots">${list.map((_,i)=>`<span class="${i===idx?'active':''}"></span>`).join("")}</div>
+    `;
+    const affordable = this.economy.canAfford(def.cost);
+    const confirmBtn = document.getElementById("hireConfirmBtn");
+    if(confirmBtn){ confirmBtn.disabled = !affordable; confirmBtn.style.opacity = affordable? "1":"0.5"; }
+  }
+  _hireFromBrowser(){
+    const role = this._hireBrowserRole;
+    const list = this._hireCandidates[role];
+    const idx = this._hireBrowserIndex;
+    const c = list[idx];
+    document.getElementById("panelHireBrowser").classList.remove("show");
+    const st = this._finalizeHire(role, c.specialty, {name:c.name, workEthic:c.workEthic, hourlyCostMult:c.costMult, skillPoints:c.skillPoints});
+    if(st){
+      // that profile is taken - roll a fresh one into the same slot so it's not hireable twice
+      list[idx] = this._generateHireCandidates(role, 1)[0];
     }
   }
   cancelHireMode(){
@@ -5257,6 +5483,46 @@ class Game{
   // existing "left unpaid" flow already covers. Only asks once per missing room type per game;
   // returns true if it actually triggered (so the caller can freeze this patient's progress
   // until the choice is made), false if there's nothing new to ask about.
+  // Animates each room's (and the hospital entrance's) door leaf open/closed based on whether
+  // anyone is actually near it right now (design feedback: materialize the doors, and have them
+  // open when someone wants to pass through) - a simple proximity check each frame, eased toward
+  // the target so it reads as a real door swinging rather than an instant cut.
+  _updateDoors(dt){
+    const thresholdSq = (TILE*1.6)*(TILE*1.6);
+    const openSpeed = 5;
+    const movers = [];
+    for(const s of this.staff){ if(s.state!=="gone") movers.push(s); }
+    for(const p of this.patients){ if(p.state!=="gone" && p.state!=="dead") movers.push(p); }
+    for(const r of this.hospital.rooms){
+      if(r._constructing || r._demolishing || !r.door) continue;
+      const doorWX=(r.door.x+0.5)*TILE, doorWY=(r.door.y+0.5)*TILE;
+      let near = false;
+      for(const e of movers){
+        const dx=e.x-doorWX, dy=e.y-doorWY;
+        if(dx*dx+dy*dy < thresholdSq){ near=true; break; }
+      }
+      r._doorOpenAmount = r._doorOpenAmount==null ? 0 : r._doorOpenAmount;
+      const target = near ? 1 : 0;
+      r._doorOpenAmount = clamp(r._doorOpenAmount + clamp(target-r._doorOpenAmount, -openSpeed*dt, openSpeed*dt), 0, 1);
+    }
+    const ent = this.hospital.entranceTile();
+    const entWX=(ent.x+0.5)*TILE, entWY=(ent.y+0.5)*TILE;
+    let entNear = false;
+    for(const e of movers){
+      const dx=e.x-entWX, dy=e.y-entWY;
+      if(dx*dx+dy*dy < thresholdSq){ entNear=true; break; }
+    }
+    this.hospital._entranceDoorOpenAmount = this.hospital._entranceDoorOpenAmount==null ? 0 : this.hospital._entranceDoorOpenAmount;
+    const entTarget = entNear ? 1 : 0;
+    this.hospital._entranceDoorOpenAmount = clamp(this.hospital._entranceDoorOpenAmount + clamp(entTarget-this.hospital._entranceDoorOpenAmount, -openSpeed*dt, openSpeed*dt), 0, 1);
+  }
+
+  // Fires the "new condition discovered" choice modal (design feedback) the first time a
+  // patient is diagnosed with a disease whose treatment room doesn't exist at all yet - not
+  // for a room that merely isn't staffed right now, which is a softer, more routine problem the
+  // existing "left unpaid" flow already covers. Only asks once per missing room type per game;
+  // returns true if it actually triggered (so the caller can freeze this patient's progress
+  // until the choice is made), false if there's nothing new to ask about.
   _maybeAskAboutMissingRoom(p){
     if(this._activeChoiceModal) return false; // one decision at a time
     const roomType = p.disease.room;
@@ -5347,6 +5613,7 @@ class Game{
     this._updateResearch(simDt);
     this._updateTraining(simDt);
     this._maybeTriggerEmergency(simDt);
+    this._updateDoors(simDt);
     this._updateConstruction(simDt);
     this._spawnLogic(simDt);
     this._checkWarnings(simDt);
@@ -5405,8 +5672,8 @@ class Game{
     if(this.statsHistory.length > 80) this.statsHistory.shift();
   }
 
-  _spawnFloatingText(worldX, worldY, text, color){
-    this.floatingTexts.push({ x:worldX, y:worldY, text, color, age:0, duration:1.6 });
+  _spawnFloatingText(worldX, worldY, text, color, kind){
+    this.floatingTexts.push({ x:worldX, y:worldY, text, color, age:0, duration:1.6, kind:kind||"text" });
   }
   _updateFloatingTexts(dt){
     for(const f of this.floatingTexts) f.age += dt;
@@ -6081,7 +6348,7 @@ class Game{
                 p.milkedCount++;
                 const fee = Math.round(p.disease.reward*0.12);
                 this.economy.earn(fee);
-                this._spawnFloatingText(p.x, p.y, "+$"+fee, "#4caf50");
+                this._spawnFloatingText(p.x, p.y, "+$"+fee, "#4caf50", "money");
                 p.happiness -= 10;
                 p.exitAfter = {type:"toRoom", roomType:nextType, nextState:"toConsult"};
               } else if(extraRoundsWanted>0 && p.milkedCount>0 && p.happiness<=15){
@@ -6285,7 +6552,7 @@ class Game{
               // most patients are being cured successfully. +2.2 per cure vs -2.5 per failure
               // means a hospital succeeding more than ~53% of the time trends upward overall.
               this.hospitalReputation = clamp(this.hospitalReputation+2.2, 0, 100);
-              this._spawnFloatingText(p.x, p.y, "+$"+p.disease.reward, "#4caf50");
+              this._spawnFloatingText(p.x, p.y, "+$"+p.disease.reward, "#4caf50", "money");
               this._logHistory(p, "✅ Treated successfully at "+ROOM_TYPES[t.type].name+" (+$"+p.disease.reward+")");
               if(p.isEmergency && this.activeEmergency && this.activeEmergency.patientIds.includes(p.id)){
                 this.activeEmergency.curedCount++;
@@ -6613,7 +6880,12 @@ class Game{
     return lerp(60, 8, this.policy.staffRestThreshold/100);
   }
   _isDueForRest(s){
-    return s.energy < this._restThreshold();
+    // A workaholic (high workEthic, from their hire profile - see openHireBrowser) pushes on
+    // well past where a break-loving colleague would already have called it - an individual
+    // trait layered on top of the global "Send Staff to Rest" policy, not a replacement for it.
+    const ethic = s.workEthic!=null ? s.workEthic : 50;
+    const personalFactor = lerp(1.4, 0.6, ethic/100); // lazy rests eagerly (higher effective threshold), workaholic waits (lower)
+    return s.energy < this._restThreshold()*personalFactor;
   }
   _freeWorkerCount(room){
     return room.staffIds.filter(id=>{
@@ -7103,6 +7375,28 @@ class Game{
       const alpha = t<0.15? t/0.15 : 1 - (t-0.15)/0.85;
       ctx.save();
       ctx.globalAlpha = clamp(alpha,0,1);
+      if(f.kind==="money"){
+        // A little green bill instead of plain floating text (design feedback) - rises and
+        // fades exactly like before, plus a gentle wobble so it reads as tumbling up rather
+        // than sliding on rails.
+        const wobble = Math.sin(t*9)*4;
+        ctx.translate(scr.x+wobble, riseY);
+        ctx.rotate(Math.sin(t*7)*0.12);
+        ctx.fillStyle = "rgba(0,0,0,.25)";
+        ctx.fillRect(-17.5,-9.5,35,19);
+        ctx.fillStyle = "#3f9a4d";
+        ctx.fillRect(-18,-10,35,19);
+        ctx.strokeStyle = "#dff2df"; ctx.lineWidth = 1.4;
+        ctx.strokeRect(-15.5,-7.7,30,14.4);
+        ctx.fillStyle = "rgba(255,255,255,.18)";
+        ctx.beginPath(); ctx.ellipse(0,-0.5,7,6,0,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle = "#eafbe9";
+        ctx.font = "bold 10.5px sans-serif";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText(f.text, 0, 0);
+        ctx.restore();
+        continue;
+      }
       ctx.font = "bold 12px sans-serif";
       ctx.textAlign = "center";
       ctx.fillStyle = "rgba(0,0,0,.4)";
@@ -7159,6 +7453,36 @@ class Game{
         const x = sum-y;
         if(x<0||x>=MAP_W) continue;
         const room = this.hospital.roomAt(x,y);
+        if(room){
+          // Room floors get a denser 2x2 "carpet" checker (design feedback: rooms should look
+          // radically different from the plain corridor, not just a tinted version of the same
+          // single-diamond-per-tile pattern) using heavily saturated colors instead of the raw
+          // pastel def.color/darkColor, so each room type actually pops and reads distinctly at
+          // a glance.
+          const def = ROOM_TYPES[room.type];
+          const carpetA = shadeForCondition(boostColor(def.color, 2.4, -0.06), room.condition);
+          const carpetB = shadeForCondition(boostColor(def.darkColor, 2.2, -0.1), room.condition);
+          for(let si=0; si<2; si++){
+            for(let sj=0; sj<2; sj++){
+              const sp = gridToScreen(x+si*0.5, y+sj*0.5);
+              ctx.beginPath();
+              ctx.moveTo(sp.x, sp.y);
+              ctx.lineTo(sp.x+TW/4, sp.y+TH/4);
+              ctx.lineTo(sp.x, sp.y+TH/2);
+              ctx.lineTo(sp.x-TW/4, sp.y+TH/4);
+              ctx.closePath();
+              ctx.fillStyle = ((x*2+si)+(y*2+sj))%2===0 ? carpetA : carpetB;
+              ctx.fill();
+            }
+          }
+          ctx.strokeStyle="rgba(0,0,0,.06)"; ctx.lineWidth=0.75;
+          const p = gridToScreen(x,y);
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y); ctx.lineTo(p.x+TW/2, p.y+TH/2);
+          ctx.lineTo(p.x, p.y+TH); ctx.lineTo(p.x-TW/2, p.y+TH/2);
+          ctx.closePath(); ctx.stroke();
+          continue;
+        }
         const p = gridToScreen(x,y);
         ctx.beginPath();
         ctx.moveTo(p.x, p.y);
@@ -7166,11 +7490,7 @@ class Game{
         ctx.lineTo(p.x, p.y+TH);
         ctx.lineTo(p.x-TW/2, p.y+TH/2);
         ctx.closePath();
-        if(room){
-          const def = ROOM_TYPES[room.type];
-          const base = ((x+y)%2===0)? def.color : def.darkColor;
-          ctx.fillStyle = shadeForCondition(base, room.condition);
-        } else if(!this.hospital.inFootprint(x,y,1,1)){
+        if(!this.hospital.inFootprint(x,y,1,1)){
           // Outside the T-shaped hospital grounds entirely (the "cut corners" of the map) -
           // filled with the same textured grass pattern as the exterior beyond the map edges
           // (design feedback: this used to be a flat, slightly different green that didn't
@@ -7182,6 +7502,22 @@ class Game{
         }
         ctx.fill();
         ctx.strokeStyle="rgba(0,0,0,.08)"; ctx.lineWidth=1; ctx.stroke();
+      }
+    }
+    // Room name labels (design feedback: an option to show/hide each room's name on the floor)
+    if(this.showRoomNames){
+      ctx.font="bold 11px sans-serif"; ctx.textAlign="center"; ctx.textBaseline="middle";
+      for(const r of this.hospital.rooms){
+        if(r._constructing || r._demolishing) continue;
+        const def = ROOM_TYPES[r.type];
+        const center = gridToScreen((r.x0+r.x1)/2, (r.y0+r.y1)/2);
+        ctx.save();
+        ctx.translate(center.x, center.y);
+        ctx.fillStyle="rgba(0,0,0,.55)";
+        ctx.fillText(def.name, 1, 1);
+        ctx.fillStyle="rgba(255,255,255,.92)";
+        ctx.fillText(def.name, 0, 0);
+        ctx.restore();
       }
     }
     // door threshold tiles get a light tint, so the opening is easy to spot at a glance
@@ -7288,7 +7624,9 @@ class Game{
 
     for(const r of this.hospital.rooms){
       const def = ROOM_TYPES[r.type];
-      const wallColor = shadeForCondition(def.darkColor, r.condition);
+      // Radically more saturated/darker than the room's floor tone (design feedback: walls
+      // should look dramatically distinct per room type, not just a muted shade of the floor).
+      const wallColor = shadeForCondition(boostColor(def.darkColor, 2.6, -0.22), r.condition);
 
       // While placing a room or furniture, hide every wall entirely - much easier to see the
       // whole floor plan and line things up than working around walls in the iso view.
@@ -7298,7 +7636,7 @@ class Game{
       if(r.doorSide==="north"){
         if(r.doorFrom>r.x0){ pushNorthRun(r,r.x0,r.doorFrom,wallColor); pushWallDecor(drawables,r,"north",r.x0,r.doorFrom); }
         if(r.doorTo<r.x1){ pushNorthRun(r,r.doorTo,r.x1,wallColor); pushWallDecor(drawables,r,"north",r.doorTo,r.x1); }
-        drawables.push({ depth:r.y0+(r.doorFrom+r.doorTo)/2, fn:(ctx)=>drawDoorOnWall(ctx,r.doorFrom,r.y0,r.doorTo,r.y0) });
+        drawables.push({ depth:r.y0+(r.doorFrom+r.doorTo)/2, fn:(ctx)=>drawDoorOnWall(ctx,r.doorFrom,r.y0,r.doorTo,r.y0,WALL_H,r._doorOpenAmount) });
       } else {
         pushNorthRun(r, r.x0, r.x1, wallColor);
         pushWallDecor(drawables, r, "north", r.x0, r.x1);
@@ -7307,7 +7645,7 @@ class Game{
       if(r.doorSide==="west"){
         if(r.doorFrom>r.y0){ pushWestRun(r,r.y0,r.doorFrom,wallColor); pushWallDecor(drawables,r,"west",r.y0,r.doorFrom); }
         if(r.doorTo<r.y1){ pushWestRun(r,r.doorTo,r.y1,wallColor); pushWallDecor(drawables,r,"west",r.doorTo,r.y1); }
-        drawables.push({ depth:r.x0+(r.doorFrom+r.doorTo)/2, fn:(ctx)=>drawDoorOnWall(ctx,r.x0,r.doorFrom,r.x0,r.doorTo) });
+        drawables.push({ depth:r.x0+(r.doorFrom+r.doorTo)/2, fn:(ctx)=>drawDoorOnWall(ctx,r.x0,r.doorFrom,r.x0,r.doorTo,WALL_H,r._doorOpenAmount) });
       } else {
         pushWestRun(r, r.y0, r.y1, wallColor);
         pushWallDecor(drawables, r, "west", r.y0, r.y1);
@@ -7323,14 +7661,14 @@ class Game{
         if(r.doorSide==="south"){
           if(r.doorFrom>r.x0) pushSouthRun(r,r.x0,r.doorFrom,wallColor);
           if(r.doorTo<r.x1) pushSouthRun(r,r.doorTo,r.x1,wallColor);
-          drawables.push({ depth:r.y1+(r.doorFrom+r.doorTo)/2, fn:(ctx)=>drawDoorOnWall(ctx,r.doorFrom,r.y1,r.doorTo,r.y1) });
+          drawables.push({ depth:r.y1+(r.doorFrom+r.doorTo)/2, fn:(ctx)=>drawDoorOnWall(ctx,r.doorFrom,r.y1,r.doorTo,r.y1,WALL_H,r._doorOpenAmount) });
         } else {
           pushSouthRun(r, r.x0, r.x1, wallColor);
         }
         if(r.doorSide==="east"){
           if(r.doorFrom>r.y0) pushEastRun(r,r.y0,r.doorFrom,wallColor);
           if(r.doorTo<r.y1) pushEastRun(r,r.doorTo,r.y1,wallColor);
-          drawables.push({ depth:r.x1+(r.doorFrom+r.doorTo)/2, fn:(ctx)=>drawDoorOnWall(ctx,r.x1,r.doorFrom,r.x1,r.doorTo) });
+          drawables.push({ depth:r.x1+(r.doorFrom+r.doorTo)/2, fn:(ctx)=>drawDoorOnWall(ctx,r.x1,r.doorFrom,r.x1,r.doorTo,WALL_H,r._doorOpenAmount) });
         } else {
           pushEastRun(r, r.y0, r.y1, wallColor);
         }
@@ -7452,9 +7790,9 @@ class Game{
     const doorMidX = ent.axis==="h" ? (ent.x0+ent.x1)/2 : ent.x0;
     const doorMidY = ent.axis==="v" ? (ent.y0+ent.y1)/2 : ent.y0;
     if(ent.axis==="h"){
-      drawables.push({ depth: doorMidX+ent.y0, fn:(ctx)=>drawDoorOnWall(ctx,ent.x0,ent.y0,ent.x1,ent.y0,WALL_H_OUTER) });
+      drawables.push({ depth: doorMidX+ent.y0, fn:(ctx)=>drawDoorOnWall(ctx,ent.x0,ent.y0,ent.x1,ent.y0,WALL_H_OUTER,H._entranceDoorOpenAmount) });
     } else {
-      drawables.push({ depth: ent.x0+doorMidY, fn:(ctx)=>drawDoorOnWall(ctx,ent.x0,ent.y0,ent.x0,ent.y1,WALL_H_OUTER) });
+      drawables.push({ depth: ent.x0+doorMidY, fn:(ctx)=>drawDoorOnWall(ctx,ent.x0,ent.y0,ent.x0,ent.y1,WALL_H_OUTER,H._entranceDoorOpenAmount) });
     }
     drawables.push({ depth: doorMidX+doorMidY+0.5, fn:(ctx)=>{
       const p = gridToScreen(doorMidX, doorMidY);
@@ -7996,7 +8334,11 @@ class Game{
     document.getElementById("hMoney").textContent = fmtMoney(this.economy.money);
     document.getElementById("hPatients").textContent = this.patients.filter(p=>p.state!=="dead").length;
     document.getElementById("hHealth").textContent = this.avgHealth();
-    document.getElementById("hRep").textContent = Math.round(this.hospitalReputation);
+    // Morale colorbar (design feedback: replaces the reputation chip to save header space) -
+    // the cursor slides left (👎, red) to right (👍, green) along the track based on average
+    // patient mood.
+    const moraleCursor = document.getElementById("moraleCursor");
+    if(moraleCursor) moraleCursor.style.left = clamp(this.avgHappiness(), 0, 100)+"%";
     document.getElementById("hDay").textContent = this.day;
     if(document.getElementById("panelStatsChart").classList.contains("show") && this._openChartMetric){
       this._openStatsChart(this._openChartMetric);

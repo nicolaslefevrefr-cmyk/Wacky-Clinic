@@ -53,16 +53,18 @@
       <div class="hud-chip money clickable" id="hMoneyChip" data-metric="money">💰 <span id="hMoney">0</span> $</div>
       <div class="hud-chip clickable" id="hPatientsChip" data-metric="patients">👥 <span id="hPatients">0</span></div>
       <div class="hud-chip clickable" id="hHealthChip" data-metric="health">🏥 <span id="hHealth">100</span>%</div>
-      <div class="hud-chip clickable" id="hRepChip" data-metric="reputation">⭐ <span id="hRep">70</span>%</div>
+      <div class="moraleBar" id="moraleBarChip" title="Overall patient mood">
+        <span class="moraleIcon">👎</span>
+        <div class="moraleTrack"><div class="moraleCursor" id="moraleCursor"></div></div>
+        <span class="moraleIcon">👍</span>
+      </div>
       <div id="hud-spacer"></div>
       <button id="settingsBtn">⚙</button>
     </div>
     <div class="ui-layer" id="hud-top-row2">
       <div class="hud-chip" id="hDayChip">📅 Day <span id="hDay">1</span></div>
       <div id="speedControls">
-        <button class="speedBtn active" data-speed="0">⏸</button>
-        <button class="speedBtn" data-speed="1">▶</button>
-        <button class="speedBtn" data-speed="2">▶▶</button>
+        <button class="speedBtn active" id="playPauseBtn" data-speed="0">▶</button>
       </div>
       <div id="hud-spacer2"></div>
       <button id="alertsBtn">🔔 Alerts <span class="count" id="alertsCount">0</span></button>
@@ -119,6 +121,27 @@
     </div>
   </div>
 
+  <div class="panel" id="panelHireBrowser">
+    <h3>Hire Staff <button class="closeX" data-close="panelHireBrowser">✕</button></h3>
+    <div id="hireBrowserBody">
+      <div id="hireRoleColumn">
+        <button class="hireRoleBtn" data-role="doctor"><span class="ic">⚕</span><span class="lbl">Doctor</span></button>
+        <button class="hireRoleBtn" data-role="nurse"><span class="ic">✚</span><span class="lbl">Nurse</span></button>
+        <button class="hireRoleBtn" data-role="maintenance"><span class="ic">🔧</span><span class="lbl">Janitor</span></button>
+        <button class="hireRoleBtn" data-role="receptionist"><span class="ic">☎</span><span class="lbl">Reception</span></button>
+      </div>
+      <div id="hireProfilePane">
+        <div id="hireProfileCard"></div>
+      </div>
+    </div>
+    <div id="hireBrowserFooter">
+      <button class="panelBtn ghost" id="hirePrevBtn">‹</button>
+      <button class="panelBtn ghost" id="hireCancelBtn">Cancel</button>
+      <button class="panelBtn primary" id="hireConfirmBtn">Hire</button>
+      <button class="panelBtn ghost" id="hireNextBtn">›</button>
+    </div>
+  </div>
+
   <div class="panel" id="panelDirectory">
     <h3>Directory <button class="closeX" data-close="panelDirectory">✕</button></h3>
     <div class="subTabs">
@@ -132,6 +155,8 @@
         <button class="subTabBtn active" id="staffSubTabHire">Hire</button>
         <button class="subTabBtn" id="staffSubTabRoster">Roster (<span id="staffRosterCount">0</span>)</button>
       </div>
+      <button class="panelBtn primary" id="btnBrowseProfiles" style="width:100%;margin-bottom:10px;">👤 Browse candidate profiles (Doctor/Nurse/Janitor/Reception)</button>
+      <div class="entityListLabel">Other</div>
       <div id="hireList"></div>
       <div id="staffRosterWrap" style="display:none;">
         <div class="sortRow">
@@ -258,6 +283,10 @@
     <div class="settingsRow">
       <div><div>Show south/east walls</div><div class="desc">Reveal the normally-hidden near walls, to see what they'd look like</div></div>
       <button class="toggleSwitch on" id="toggleHiddenWalls"></button>
+    </div>
+    <div class="settingsRow">
+      <div><div>Show room names</div><div class="desc">Label each room with its name on the floor</div></div>
+      <button class="toggleSwitch on" id="toggleRoomNames"></button>
     </div>
     <div class="settingsRow" style="border-top:1px solid var(--panel-edge);margin-top:8px;padding-top:12px;">
       <div><div>Version</div><div class="desc">Wacky Clinic <span id="versionLabel"></span></div></div>
