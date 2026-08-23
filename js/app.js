@@ -5,7 +5,7 @@
    0. CONSTANTS
    ========================================================================= */
 const TILE = 32;
-const GAME_VERSION = "1.6.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
+const GAME_VERSION = "1.7.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
 const CONSTRUCTION_SECONDS = 5; // how long a build/demolish/hire takes to actually complete (design feedback: shouldn't be instant)
 // Map is sized to comfortably fit a randomly-generated T-shaped hospital footprint (see
 // Hospital._generateShape) in any of its 4 possible orientations, at roughly 50% more total
@@ -2286,6 +2286,9 @@ class Hospital{
       _constructionTimer: 0,
       _demolishing: false,
       _demolishTimer: 0,
+      // Player-added windows on each wall (see the room detail panel's "Customize" section) -
+      // purely cosmetic, always starts empty.
+      windows: {north:false, south:false, east:false, west:false},
     };
     // Staff capacity (design feedback: "one room = one staff member" - multiple people sharing
     // a room, scaled by floor area, was confusing to reason about). The only two exceptions are
@@ -2854,14 +2857,30 @@ function drawWallXray(ctx, x, y){
   ctx.stroke();
   ctx.restore();
 }
+// A player-placed window (see Game.toggleRoomWindow / the room detail panel's "Customize"
+// section) - a lighter "sky" pane with a cross mullion, frames drawn a bit deeper than the
+// other wall decor so it reads as an actual opening rather than a hung object.
+function drawWallWindow(ctx, x, y){
+  ctx.save(); ctx.translate(x,y);
+  ctx.fillStyle="#5a4632"; ctx.fillRect(-9,-9,18,14);
+  ctx.fillStyle="#bfe0ee"; ctx.fillRect(-7,-7.3,14,10.6);
+  ctx.fillStyle="rgba(255,255,255,.35)"; ctx.fillRect(-7,-7.3,6,10.6);
+  ctx.strokeStyle="#5a4632"; ctx.lineWidth=1.3;
+  ctx.beginPath(); ctx.moveTo(0,-7.3); ctx.lineTo(0,3.3); ctx.moveTo(-7,-2); ctx.lineTo(7,-2); ctx.stroke();
+  ctx.restore();
+}
 const WALL_DECOR_KINDS = ["light","painting","xray"];
 const WALL_DIR_NORTH = (()=>{ const d=Math.hypot(32,16); return [32/d, 16/d]; })();
 const WALL_DIR_WEST  = (()=>{ const d=Math.hypot(32,16); return [-32/d, 16/d]; })();
 function pushWallDecor(drawables, r, side, a, b){
   if(b<=a) return;
   const mid = a + Math.floor((b-a)/2);
-  const kind = WALL_DECOR_KINDS[seedHash(r.id+side+mid) % WALL_DECOR_KINDS.length];
-  const drawFn = kind==="light"? drawWallLight : kind==="painting"? drawWallPainting : drawWallXray;
+  // A player-added window (see the room detail panel's "Customize" section) always wins over
+  // the random light/painting/x-ray pick for that wall - it's a deliberate placement, not
+  // ambient decoration.
+  const hasWindow = r.windows && r.windows[side];
+  const kind = hasWindow ? "window" : WALL_DECOR_KINDS[seedHash(r.id+side+mid) % WALL_DECOR_KINDS.length];
+  const drawFn = kind==="window" ? drawWallWindow : kind==="light"? drawWallLight : kind==="painting"? drawWallPainting : drawWallXray;
   const heightFrac = kind==="light"? 0.9 : 0.55;
   let depth, anchor;
   if(side==="north"){
@@ -3020,7 +3039,7 @@ class Game{
     this.paused = true;
     this.hasStartedPlaying = false;
     this.lastTs = 0;
-    this.spawnTimer = 6;
+    this.spawnTimer = 12;
     this._buildGrassPattern();
     this.selected = null; // {kind, entity}
     this._staffRoomPickerOpen = null; // staff id whose custom room-picker list is expanded
@@ -3089,7 +3108,7 @@ class Game{
     this.floatingTexts = [];
     this.activeEmergency = null;
     this.statsHistory = [];
-    this.simTime=0; this.day=1; this.spawnTimer=6;
+    this.simTime=0; this.day=1; this.spawnTimer=12;
     this.objectives = this._defaultObjectives();
 
     // The hospital starts completely empty - the player builds their first rooms and hires
@@ -3157,11 +3176,11 @@ class Game{
       statsHistory:this.statsHistory,
       hospitalShape:{ bar:this.hospital.bar, stem:this.hospital.stem, entrance:this.hospital.entrance, direction:this.hospital.direction },
       objects:this.hospital.objects.map(o=>({id:o.id,type:o.type,x:o.x,y:o.y})),
-      messes:this.hospital.messes.map(m=>({id:m.id,x:m.x,y:m.y,tileX:m.tileX,tileY:m.tileY,type:m.type})),
+      messes:this.hospital.messes.map(m=>({id:m.id,x:m.x,y:m.y,tileX:m.tileX,tileY:m.tileY,type:m.type,patientId:m.patientId})),
       day:this.day, simTime:this.simTime,
-      rooms:this.hospital.rooms.map(r=>({id:r.id,type:r.type,x:r.x,y:r.y,w:r.w,h:r.h,level:r.level,doorSide:r.doorSide,patientsServed:r.patientsServed,condition:r.condition,machineDurability:r.machineDurability,machineBroken:r.machineBroken,_constructing:r._constructing,_constructionTimer:r._constructionTimer,_demolishing:r._demolishing,_demolishTimer:r._demolishTimer,lastServedAt:r.lastServedAt})),
+      rooms:this.hospital.rooms.map(r=>({id:r.id,type:r.type,x:r.x,y:r.y,w:r.w,h:r.h,level:r.level,doorSide:r.doorSide,patientsServed:r.patientsServed,condition:r.condition,machineDurability:r.machineDurability,machineBroken:r.machineBroken,_constructing:r._constructing,_constructionTimer:r._constructionTimer,_demolishing:r._demolishing,_demolishTimer:r._demolishTimer,lastServedAt:r.lastServedAt,windows:r.windows})),
       staff:this.staff.map(s=>({id:s.id,type:s.type,name:s.name,x:s.x,y:s.y,skill:s.skill,skillPoints:s.skillPoints,specialty:s.specialty,energy:s.energy,assignedRoomId:s.assignedRoomId,thirst:s.thirst,pendingHire:s.pendingHire,pendingHireTimer:s.pendingHireTimer})),
-      patients:this.patients.map(p=>({id:p.id,name:p.name,age:p.age,diseaseKey:p.diseaseKey,health:p.health,happiness:p.happiness,x:p.x,y:p.y,state:p.state,diagnosisProgress:p.diagnosisProgress,thirst:p.thirst,isEmergency:p.isEmergency,diagnosed:p.diagnosed,diagnosisConfidence:p.diagnosisConfidence,diagnosisAttempts:p.diagnosisAttempts,milkedCount:p.milkedCount}))
+      patients:this.patients.map(p=>({id:p.id,name:p.name,age:p.age,diseaseKey:p.diseaseKey,health:p.health,happiness:p.happiness,x:p.x,y:p.y,state:p.state,diagnosisProgress:p.diagnosisProgress,thirst:p.thirst,isEmergency:p.isEmergency,diagnosed:p.diagnosed,diagnosisConfidence:p.diagnosisConfidence,diagnosisAttempts:p.diagnosisAttempts,milkedCount:p.milkedCount,deadTimer:p.deadTimer}))
     };
   }
   _deserialize(data){
@@ -3202,12 +3221,13 @@ class Game{
       room._constructionTimer = r._constructionTimer||0;
       room._demolishing = !!r._demolishing;
       room._demolishTimer = r._demolishTimer||0;
+      if(r.windows) room.windows = r.windows;
     });
     (data.objects||[]).forEach(o=>{
       this.hospital.objects.push({ id:o.id, type:o.type, x:o.x, y:o.y, occupiedBy:null });
     });
     (data.messes||[]).forEach(m=>{
-      this.hospital.messes.push({ id:m.id, x:m.x, y:m.y, tileX:m.tileX, tileY:m.tileY, type:m.type, age:0 });
+      this.hospital.messes.push({ id:m.id, x:m.x, y:m.y, tileX:m.tileX, tileY:m.tileY, type:m.type, age:0, patientId:m.patientId });
     });
     (data.staff||[]).forEach(s=>{
       const st = new Staff(s.type, s.x, s.y, s.specialty||null);
@@ -3237,6 +3257,15 @@ class Game{
       pat.thirst = p.thirst||0;
       pat.isEmergency = !!p.isEmergency;
       pat.x=p.x; pat.y=p.y;
+      // A lingering body (state "dead", waiting on the janitor - see _patientDies) must stay
+      // exactly that after a reload, not get swept into the normal diagnosed/in-progress resume
+      // logic below and start walking around again.
+      if(p.state==="dead"){
+        pat.state = "dead";
+        pat.deadTimer = p.deadTimer||1; // already faded in, no need to replay the animation
+        this.patients.push(pat);
+        return;
+      }
       // Resume from roughly where they were instead of restarting the whole visit (design
       // feedback: everyone used to get forced back to "arriving" -> reception on every reload,
       // even a patient who'd already been fully diagnosed and was on their way to be cured).
@@ -3395,6 +3424,38 @@ class Game{
     };
     document.getElementById("confirmOkBtn").addEventListener("click", ()=>{ cleanup(); onConfirm(); }, {once:true});
     document.getElementById("confirmCancelBtn").addEventListener("click", ()=>{ cleanup(); }, {once:true});
+  }
+
+  // A bigger decision than a yes/no confirm - pauses the sim (design feedback: these moments,
+  // like "we've discovered a new condition we can't treat yet", are meant to genuinely stop the
+  // player and ask something important, unlike the lightweight build/hire holds elsewhere) and
+  // presents 2-3 labeled choices, each running its own callback. The modal's own dimmed backdrop
+  // is the pause indicator here - no separate "⏸ PAUSED" overlay on top of it.
+  showChoice(title, message, choices){
+    this._speedBeforeChoice = { paused:this.paused, speedMult:this.speedMult };
+    this.paused = true;
+    document.getElementById("choiceTitle").textContent = title;
+    document.getElementById("choiceMessage").textContent = message;
+    const btnContainer = document.getElementById("choiceButtons");
+    btnContainer.innerHTML = "";
+    choices.forEach(c=>{
+      const btn = document.createElement("button");
+      btn.className = "panelBtn "+(c.cls||"ghost");
+      btn.textContent = c.label;
+      btn.addEventListener("click", ()=>{
+        document.getElementById("choiceModal").classList.remove("show");
+        if(this._speedBeforeChoice){
+          this.paused = this._speedBeforeChoice.paused;
+          this.speedMult = this._speedBeforeChoice.speedMult;
+          const sp = this.paused ? "0" : String(this.speedMult);
+          document.querySelectorAll(".speedBtn").forEach(b=>b.classList.toggle("active", b.dataset.speed===sp));
+          this._speedBeforeChoice = null;
+        }
+        c.action();
+      }, {once:true});
+      btnContainer.appendChild(btn);
+    });
+    document.getElementById("choiceModal").classList.add("show");
   }
 
   /* ---------------- resize ---------------- */
@@ -5031,6 +5092,30 @@ class Game{
       });
     }
 
+    // "Customize" (design feedback: some way to personalize a built room - windows, moving
+    // furniture, etc). Windows are the part actually implemented so far: a toggle per wall,
+    // purely cosmetic. Only offered once the room is actually finished being placed.
+    if(!room._constructing && !room._demolishing){
+      const custLabel = document.createElement("div");
+      custLabel.className="entityListLabel"; custLabel.textContent="Customize";
+      body.appendChild(custLabel);
+      const custRow = document.createElement("div");
+      custRow.style.cssText = "display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;";
+      room.windows = room.windows || {north:false, south:false, east:false, west:false};
+      [["north","N wall"],["west","W wall"],["south","S wall"],["east","E wall"]].forEach(([side,label])=>{
+        const wBtn = document.createElement("button");
+        wBtn.className = "panelBtn "+(room.windows[side]?"primary":"ghost");
+        wBtn.style.cssText = "flex:1;min-width:70px;font-size:11.5px;padding:8px 4px;";
+        wBtn.textContent = (room.windows[side]?"🪟 ":"▢ ")+label;
+        wBtn.addEventListener("click", ()=>{
+          this.toggleRoomWindow(room, side);
+          this._openRoomInfo(room, true);
+        });
+        custRow.appendChild(wBtn);
+      });
+      body.appendChild(custRow);
+    }
+
     const btnRow = document.createElement("div");
     btnRow.className="panelBtnRow";
     // "Call handyman to repair" (design feedback: no direct way to request a repair - had to
@@ -5082,6 +5167,14 @@ class Game{
     anyJanitor._taskQueue = anyJanitor._taskQueue || [];
     anyJanitor._taskQueue.unshift({type:"repair", roomId:room.id});
     this.pushToast("Every handyman is busy - "+anyJanitor.name+" will head there next.", "good");
+  }
+  // Toggles a window on one wall of a room (see the room detail panel's "Customize" section) -
+  // purely cosmetic (see pushWallDecor), only meaningfully visible on the north/west walls
+  // since south/east are hidden by the camera by default the same way room decor already is.
+  toggleRoomWindow(room, side){
+    room.windows = room.windows || {north:false, south:false, east:false, west:false};
+    room.windows[side] = !room.windows[side];
+    this.save();
   }
 
   deleteRoom(roomId){
@@ -5154,13 +5247,87 @@ class Game{
       toConsult:"Heading to consultation", queueConsult:"Waiting for doctor", beingConsulted:"In consultation",
       toTreatment:"Heading to treatment", queueTreatment:"Waiting for treatment", beingTreated:"Being treated",
       toWaitingRoom:"Heading to waiting room", beingRecalled:"Called back from waiting room",
-      walkOut:"Leaving the room", leaving:"Leaving", gone:"Gone"
+      walkOut:"Leaving the room", leaving:"Leaving", gone:"Gone",
+      awaitingDecision:"Waiting on your decision", waitingForRoom:"Waiting for a room to be built"
     }[s]||s;
   }
-  // Adds a one-off entry to an entity's history log, for events that matter but aren't
-  // captured by the generic per-frame state-change tracking below (design feedback: "put in the
-  // history whether the consultation worked, whether there was a problem like no suitable room,
-  // etc" - things that are more specific than just "state changed to X").
+  // Fires the "new condition discovered" choice modal (design feedback) the first time a
+  // patient is diagnosed with a disease whose treatment room doesn't exist at all yet - not
+  // for a room that merely isn't staffed right now, which is a softer, more routine problem the
+  // existing "left unpaid" flow already covers. Only asks once per missing room type per game;
+  // returns true if it actually triggered (so the caller can freeze this patient's progress
+  // until the choice is made), false if there's nothing new to ask about.
+  _maybeAskAboutMissingRoom(p){
+    if(this._activeChoiceModal) return false; // one decision at a time
+    const roomType = p.disease.room;
+    if(this.hospital.roomsOfType(roomType).length > 0) return false; // room exists - a staffing gap, not a missing room
+    this._missingRoomAcknowledged = this._missingRoomAcknowledged || new Set();
+    if(this._missingRoomAcknowledged.has(roomType)) return false;
+    this._missingRoomAcknowledged.add(roomType);
+    this._activeChoiceModal = true;
+    const roomName = ROOM_TYPES[roomType] ? ROOM_TYPES[roomType].name : roomType;
+    this.showChoice(
+      "New condition discovered",
+      "Your team has discovered a new condition: "+p.disease.name+". You must build a "+roomName+" to be able to deal with this. What do you want to do with "+p.name+"?",
+      [
+        { label:"Send patient home", cls:"danger", action:()=>{
+          this._activeChoiceModal = false;
+          this.hospitalReputation = clamp(this.hospitalReputation-3, 0, 100);
+          this.pushToast(p.name+" was sent home.", "bad");
+          this._logHistory(p, "🏠 Sent home - no "+roomName+" built yet");
+          if(p.state==="awaitingDecision"){ p.state="leaving"; this._sendToExit(p); }
+        }},
+        { label:"Let them wait at the hospital", cls:"primary", action:()=>{
+          this._activeChoiceModal = false;
+          this.pushToast(p.name+" will wait for the "+roomName+" to be built.", "good");
+          this._logHistory(p, "⏳ Waiting for a "+roomName+" to be built");
+          if(p.state==="awaitingDecision"){ p.state="waitingForRoom"; p._waitingReason="treatment"; }
+        }}
+      ]
+    );
+    return true;
+  }
+  // Fires the "we've run out of diagnostic capacity" choice modal the moment a patient hits
+  // the diagnosis-attempt cap without ever reaching full confidence - same one-shot-per-decision
+  // gating (this._activeChoiceModal) as the missing-room case above, but this one is per-patient
+  // rather than per-disease since it's specifically about THIS patient's own diagnosis, not a
+  // structural gap in the hospital.
+  _maybeAskAboutExhaustedDiagnosis(p){
+    if(this._activeChoiceModal) return false;
+    this._activeChoiceModal = true;
+    const confidencePct = Math.round(clamp(p.diagnosisProgress / p.disease.diagnosisRequired, 0.35, 0.95)*100);
+    const roomName = ROOM_TYPES[p.disease.room] ? ROOM_TYPES[p.disease.room].name : p.disease.room;
+    this.showChoice(
+      "Diagnosis inconclusive",
+      "We have exhausted all our diagnosis machines on "+p.name+" and we are still not sure what is wrong. There is a "+confidencePct+"% chance that we have correctly identified the condition. What shall we do with the patient?",
+      [
+        { label:"Send patient home", cls:"danger", action:()=>{
+          this._activeChoiceModal = false;
+          this.hospitalReputation = clamp(this.hospitalReputation-3, 0, 100);
+          this.pushToast(p.name+" was sent home.", "bad");
+          this._logHistory(p, "🏠 Sent home - diagnosis inconclusive");
+          if(p.state==="awaitingDecision"){ p.state="leaving"; this._sendToExit(p); }
+        }},
+        { label:"Take a chance on the cure", cls:"primary", action:()=>{
+          this._activeChoiceModal = false;
+          p.diagnosisConfidence = clamp(p.diagnosisProgress / p.disease.diagnosisRequired, 0.35, 0.95);
+          p.happiness -= 8;
+          this._logHistory(p, "🎲 Proceeding to treatment on a "+confidencePct+"% guess");
+          if(p.state==="awaitingDecision"){
+            p.exitAfter = {type:"toRoom", roomType:p.disease.room, nextState:"toTreatment"};
+            p.state="walkOut";
+          }
+        }},
+        { label:"Wait while more diagnosis rooms are built", cls:"ghost", action:()=>{
+          this._activeChoiceModal = false;
+          this.pushToast(p.name+" will wait for more diagnostic equipment.", "good");
+          this._logHistory(p, "⏳ Waiting for more diagnostic rooms");
+          if(p.state==="awaitingDecision"){ p.state="waitingForRoom"; p._waitingReason="diagnosis"; }
+        }}
+      ]
+    );
+    return true;
+  }
   _logHistory(entity, label){
     entity._history = entity._history || [];
     entity._history.push({ t:this.simTime, label });
@@ -5540,12 +5707,20 @@ class Game{
     this.spawnTimer -= dt;
     if(this.spawnTimer<=0){
       const recRooms = this.hospital.roomsOfType("reception");
-      if(recRooms.length>0 && this.patients.length<20){
+      // Fewer patients allowed in early on (design feedback: the flow should start light) -
+      // grows gradually as the days pass, capping at the original 20.
+      const capacityLimit = Math.round(clamp(6 + this.day*0.8, 6, 20));
+      if(recRooms.length>0 && this.patients.length<capacityLimit){
         const diseaseKey = this._pickDiseaseKey();
         const p = new Patient(this.hospital, diseaseKey);
         this.patients.push(p);
       }
-      this.spawnTimer = 6 + Math.random()*8;
+      // Spawn interval itself also ramps down gradually over the first ~2 weeks instead of
+      // being a fixed 6-14s from day 1 - a brand new, barely-staffed hospital gets a gentler
+      // trickle of patients rather than being flooded immediately.
+      const rampProgress = clamp(this.day/14, 0, 1);
+      const minGap = lerp(16, 6, rampProgress), maxGap = lerp(26, 14, rampProgress);
+      this.spawnTimer = minGap + Math.random()*(maxGap-minGap);
     }
   }
 
@@ -5914,6 +6089,12 @@ class Game{
                 this.hospitalReputation = clamp(this.hospitalReputation-3, 0, 100);
                 this.pushToast(p.name+" left without paying - kept waiting too long for tests.", "bad");
                 p.exitAfter = {type:"leave"};
+              } else if(this._maybeAskAboutMissingRoom(p)){
+                // A brand-new condition whose treatment room doesn't exist yet - the player
+                // needs to be asked what to do with this patient (see the choice modal); freeze
+                // them here instead of routing toward a room that isn't there.
+                p.state = "awaitingDecision";
+                break;
               } else {
                 p.exitAfter = {type:"toRoom", roomType:p.disease.room, nextState:"toTreatment"};
               }
@@ -5929,6 +6110,11 @@ class Game{
               if(p.diagnosisAttempts < maxAttempts && nextRoom){
                 p.happiness -= 6;
                 p.exitAfter = {type:"toRoom", roomType:nextType, nextState:"toConsult"};
+              } else if(this._maybeAskAboutExhaustedDiagnosis(p)){
+                // Out of diagnostic capacity/attempts - ask the player what to do instead of
+                // silently defaulting to "proceed on a guess".
+                p.state = "awaitingDecision";
+                break;
               } else {
                 // no more diagnosis capacity or attempts left - proceed on a best guess
                 // (design doc §8): treatment still happens, just with reduced confidence
@@ -5938,6 +6124,39 @@ class Game{
               }
             }
             p.state="walkOut";
+          }
+          break;
+        }
+        case "awaitingDecision": {
+          // Frozen in place until the player answers the choice modal (see
+          // _maybeAskAboutMissingRoom / _maybeAskAboutExhaustedDiagnosis) - the modal itself
+          // pauses the sim, so in practice this state is only ever "held" for the rest of the
+          // current tick; the callback moves them on to whatever was actually chosen.
+          break;
+        }
+        case "waitingForRoom": {
+          // Patiently waiting, at the player's request, either for their treatment room to get
+          // built (_waitingReason "treatment") or for more diagnostic capacity
+          // (_waitingReason "diagnosis") - periodically rechecks and resumes their visit the
+          // moment what they're waiting for actually shows up.
+          if(p._waitingReason==="diagnosis"){
+            const nextType = this._pickNextDiagnosticRoomType(p, null);
+            const nextRoom = nextType && this._findAvailableRoomWithStaff(nextType);
+            if(nextRoom){
+              p.happiness = clamp(p.happiness+5, 0, 100); // relief that progress is finally possible again
+              p.exitAfter = {type:"toRoom", roomType:nextType, nextState:"toConsult"};
+              p.state = "walkOut";
+              this._logHistory(p, "🔍 New diagnostic capacity available - resuming diagnosis");
+            }
+          } else {
+            const target = this._findAvailableRoomWithStaff(p.disease.room);
+            if(target){
+              p.targetRoomId = target.id;
+              const door = this.hospital.doorWorld(target);
+              p.setPathToTile(this.hospital, Math.floor(door.x/TILE), Math.floor(door.y/TILE));
+              p.state = "toTreatment";
+              this._logHistory(p, "🏗 Their room is ready - heading to treatment");
+            }
           }
           break;
         }

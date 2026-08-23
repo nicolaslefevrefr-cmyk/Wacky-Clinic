@@ -312,5 +312,19 @@
   #confirmModal .box p{margin:0 0 14px;color:var(--ink);font-size:14px;line-height:1.4;}
   #confirmModal .box .row{display:flex;gap:10px;}
 
+  #choiceModal{
+    position:absolute;inset:0;background:rgba(10,13,20,.65);display:none;
+    align-items:center;justify-content:center;z-index:41;pointer-events:auto;padding:20px;
+  }
+  #choiceModal.show{display:flex;}
+  #choiceModal .box{
+    background:var(--panel);border:2px solid var(--panel-edge);border-radius:16px;
+    padding:18px;max-width:340px;width:100%;box-shadow:0 12px 32px rgba(0,0,0,.4);
+  }
+  #choiceModal .box h3{margin:0 0 8px;color:var(--ink);font-size:16px;}
+  #choiceModal .box p{margin:0 0 14px;color:var(--ink);font-size:13.5px;line-height:1.45;}
+  #choiceButtons{display:flex;flex-direction:column;gap:8px;}
+  #choiceButtons .panelBtn{width:100%;}
+
   ::-webkit-scrollbar{width:6px;}
   ::-webkit-scrollbar-thumb{background:#d8cfb8;border-radius:3px;}
