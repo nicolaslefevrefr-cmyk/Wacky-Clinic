@@ -5,7 +5,7 @@
    0. CONSTANTS
    ========================================================================= */
 const TILE = 32;
-const GAME_VERSION = "1.8.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
+const GAME_VERSION = "1.9.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
 const CONSTRUCTION_SECONDS = 5; // how long a build/demolish/hire takes to actually complete (design feedback: shouldn't be instant)
 // Map is sized to comfortably fit a randomly-generated T-shaped hospital footprint (see
 // Hospital._generateShape) in any of its 4 possible orientations, at roughly 50% more total
@@ -2020,6 +2020,14 @@ const HIRE_QUIPS = {
     "Types 110 words per minute, mostly complaints.",
     "Keeps a stash of mints for patients who \"really need one\".",
   ],
+  researcher: [
+    "Published a paper nobody understood, including the co-authors.",
+    "Believes the answer is always \"more funding\".",
+    "Keeps a whiteboard covered in equations no one's allowed to erase.",
+    "Once discovered something big. Won't say what. Signed an NDA.",
+    "Drinks coffee like it's a load-bearing part of the experiment.",
+    "Refers to failed experiments as \"preliminary successes\".",
+  ],
 };
 // Portrait background colors, cycled per candidate slot for a bit of visual variety without
 // needing actual artwork - a plain colored circle plus the role's emoji reads fine at this size.
@@ -2099,14 +2107,21 @@ function boostColor(hex, satMult, lightDelta){
     else h=(r-g)/d+4;
     h/=6;
   }
-  s = clamp(s*(satMult||1), 0, 1);
+  // Remaps the original hue into a cool, clinical white/green/blue arc (roughly 150°-225°)
+  // instead of leaving it free across the whole color wheel (design feedback: the more vivid
+  // palette read as too far from "a real hospital" - this keeps rooms visually distinct from
+  // each other, since different base hues still land on different points along the arc, while
+  // staying in colors that actually look like they belong in a hospital). Saturation is also
+  // capped rather than just multiplied, so it stays clean rather than neon.
+  const targetH = (150 + h*75) / 360;
+  s = clamp(s*(satMult||1), 0, 0.4);
   l = clamp(l+(lightDelta||0), 0, 1);
   const hue2rgb=(p,q,t)=>{ if(t<0)t+=1; if(t>1)t-=1; if(t<1/6) return p+(q-p)*6*t; if(t<1/2) return q; if(t<2/3) return p+(q-p)*(2/3-t)*6; return p; };
   let r2,g2,b2;
   if(s===0){ r2=g2=b2=l; } else {
     const q = l<0.5? l*(1+s) : l+s-l*s;
     const p = 2*l-q;
-    r2=hue2rgb(p,q,h+1/3); g2=hue2rgb(p,q,h); b2=hue2rgb(p,q,h-1/3);
+    r2=hue2rgb(p,q,targetH+1/3); g2=hue2rgb(p,q,targetH); b2=hue2rgb(p,q,targetH-1/3);
   }
   const toHex=(v)=>clamp(Math.round(v*255),0,255).toString(16).padStart(2,"0");
   return "#"+toHex(r2)+toHex(g2)+toHex(b2);
@@ -2817,12 +2832,14 @@ class Staff extends MovingEntity{
     this.pendingHire = false;
     this.pendingHireTimer = 0;
   }
-  // Effective salary including any specialty surcharge (GAME_DATA.config.specialties). Structure
-  // only for now - _onNewDay still needs to be pointed at this instead of the flat def.salary
-  // for the surcharge to actually hit the daily books.
+  // Effective salary including any specialty surcharge (GAME_DATA.config.specialties) and this
+  // hire's individual cost multiplier (see openHireBrowser - a more workaholic candidate costs
+  // more, both to hire and per day, design feedback: "hourly cost should be tied to
+  // productivity").
   get salary(){
     const surcharge = this.specialty && SPECIALTIES[this.specialty] ? SPECIALTIES[this.specialty].salarySurcharge : 0;
-    return (this.def.salary||0) + surcharge;
+    const mult = this.hourlyCostMult!=null ? this.hourlyCostMult : 1;
+    return Math.round((this.def.salary||0)*mult) + surcharge;
   }
   get rankLabel(){
     return (STAFF_RANKS[this.rank] && STAFF_RANKS[this.rank].label) || this.def.name;
@@ -2973,15 +2990,28 @@ function pushWallDecor(drawables, r, side, a, b){
   const kind = hasWindow ? "window" : WALL_DECOR_KINDS[seedHash(r.id+side+mid) % WALL_DECOR_KINDS.length];
   const drawFn = kind==="window" ? drawWallWindow : kind==="light"? drawWallLight : kind==="painting"? drawWallPainting : drawWallXray;
   const heightFrac = kind==="light"? 0.9 : 0.55;
-  let depth, anchor;
+  // All 4 sides now supported (design feedback: south/east window toggles used to be silent
+  // no-ops since only north/west ever actually rendered decor) - south/east only actually get
+  // drawn when "Show south/east walls" is on, same condition their plain wall segments already
+  // use, so a window there doesn't appear out of nowhere on a wall that isn't itself visible.
+  let depth, anchor, dir;
   if(side==="north"){
     depth = mid+0.5+r.y0;
     anchor = wallAnchor(mid, r.y0, mid+1, r.y0, heightFrac);
-  } else {
+    dir = WALL_DIR_NORTH;
+  } else if(side==="west"){
     depth = r.x0+mid+0.5;
     anchor = wallAnchor(r.x0, mid, r.x0, mid+1, heightFrac);
+    dir = WALL_DIR_WEST;
+  } else if(side==="south"){
+    depth = mid+0.5+r.y1;
+    anchor = wallAnchor(mid, r.y1, mid+1, r.y1, heightFrac);
+    dir = WALL_DIR_NORTH;
+  } else { // east
+    depth = r.x1+mid+0.5;
+    anchor = wallAnchor(r.x1, mid, r.x1, mid+1, heightFrac);
+    dir = WALL_DIR_WEST;
   }
-  const dir = side==="north"? WALL_DIR_NORTH : WALL_DIR_WEST;
   drawables.push({ depth: depth+0.001, fn:(ctx)=>{
     ctx.save();
     ctx.translate(anchor.x, anchor.y);
@@ -3863,11 +3893,12 @@ class Game{
     this._refreshBuildList();
     this._refreshFurnitureList();
 
-    // hire list - only Researcher stays here (design feedback moved doctor/nurse/janitor/
-    // receptionist to the new face-browser hire window below); the "Browse Profiles" button
-    // above this list is what actually opens that for the other four roles.
+    // The old inline hire list is gone entirely now - all 5 roles (doctor/nurse/janitor/
+    // receptionist/researcher) live in the face-browser hire window (see btnBrowseProfiles /
+    // openHireBrowser), so there's nothing left for this list to show.
     const hireList = document.getElementById("hireList");
-    Object.keys(STAFF_TYPES).filter(k=>k==="researcher").forEach(key=>{
+    hireList.style.display = "none";
+    Object.keys(STAFF_TYPES).filter(k=>false).forEach(key=>{
       const def = STAFF_TYPES[key];
       const el = document.createElement("div");
       el.className="roomOption";
@@ -4157,8 +4188,11 @@ class Game{
   // cost/skill onto the new hire instead of the plain random defaults.
   _finalizeHire(type, specialty, overrides){
     const def = STAFF_TYPES[type];
-    if(!this.economy.canAfford(def.cost)){ this.pushToast("Not enough money to hire.", "bad", true); return null; }
-    this.economy.spend(def.cost);
+    // Hire cost also scales with the candidate's cost multiplier (design feedback: a more
+    // workaholic/productive hire costs more up front too, not just per day).
+    const hireCost = overrides && overrides.hourlyCostMult!=null ? Math.round(def.cost*overrides.hourlyCostMult) : def.cost;
+    if(!this.economy.canAfford(hireCost)){ this.pushToast("Not enough money to hire.", "bad", true); return null; }
+    this.economy.spend(hireCost);
     const homeRoom = this.hospital.roomsOfType("staffroom")[0] || this.hospital.roomsOfType("reception")[0];
     const pos = homeRoom? this.hospital.roomCenterWorld(homeRoom) : {x:MAP_W*TILE/2,y:MAP_H*TILE/2};
     const st = new Staff(type, pos.x, pos.y, specialty||null);
@@ -4222,11 +4256,18 @@ class Game{
     const list = [];
     for(let i=0;i<count;i++){
       const specialty = specialtyPool[i % specialtyPool.length];
+      const workEthic = Math.round(15 + Math.random()*80);
+      // Cost scales with work ethic (design feedback: "hourly cost should be tied to
+      // productivity - the more workaholic the staff, the more they're paid, both hourly and
+      // at hire") - a small amount of independent noise on top so two similarly-driven
+      // candidates aren't perfectly interchangeable, but workEthic is clearly the dominant
+      // factor rather than a coincidence.
+      const costMult = clamp(lerp(0.75, 1.45, workEthic/100) + (Math.random()*0.16-0.08), 0.65, 1.6);
       list.push({
         name: def.name+" "+choice(["Martin","Cole","Rossi","Nkomo","Chen","Garcia","Dubois","Haddad","Okafor","Kowalski"]),
         specialty,
-        workEthic: Math.round(15 + Math.random()*80),
-        costMult: 0.75 + Math.random()*0.6,
+        workEthic,
+        costMult,
         quip: quips[Math.floor(Math.random()*quips.length)],
         avatarColor: choice(HIRE_AVATAR_COLORS),
         skillPoints: role==="doctor"
@@ -4243,7 +4284,7 @@ class Game{
     this._hireCandidates = this._hireCandidates || {};
     this._hireBrowserRole = this._hireBrowserRole || "doctor";
     this._hireBrowserIndex = this._hireBrowserIndex || 0;
-    ["doctor","nurse","maintenance","receptionist"].forEach(role=>{
+    ["doctor","nurse","maintenance","receptionist","researcher"].forEach(role=>{
       if(!this._hireCandidates[role]) this._hireCandidates[role] = this._generateHireCandidates(role);
     });
     this.closeAllPanels();
@@ -4266,6 +4307,7 @@ class Game{
     const surcharge = c.specialty && SPECIALTIES[c.specialty] ? SPECIALTIES[c.specialty].salarySurcharge : 0;
     const dailyCost = Math.round(def.salary*c.costMult) + surcharge;
     const hourly = Math.max(1, Math.round(dailyCost/8));
+    const hireCost = Math.round(def.cost*c.costMult);
     const specLabel = c.specialty ? " · "+c.specialty[0].toUpperCase()+c.specialty.slice(1) : "";
     document.getElementById("hireProfileCard").innerHTML = `
       <div class="hireAvatar" style="background:${c.avatarColor};">${def.symbol}</div>
@@ -4274,11 +4316,11 @@ class Game{
       <div class="hireEthicBar"><div class="hireEthicFill" style="left:${c.workEthic}%;"></div></div>
       <div style="height:8px;"></div>
       <div class="hireStatRow"><span>Hourly cost</span><b>$${hourly}/hr</b></div>
-      <div class="hireStatRow"><span>Hire cost</span><b>${fmtMoney(def.cost)} $</b></div>
+      <div class="hireStatRow"><span>Hire cost</span><b>${fmtMoney(hireCost)} $</b></div>
       <div class="hireQuip">"${c.quip}"</div>
       <div class="hireDots">${list.map((_,i)=>`<span class="${i===idx?'active':''}"></span>`).join("")}</div>
     `;
-    const affordable = this.economy.canAfford(def.cost);
+    const affordable = this.economy.canAfford(hireCost);
     const confirmBtn = document.getElementById("hireConfirmBtn");
     if(confirmBtn){ confirmBtn.disabled = !affordable; confirmBtn.style.opacity = affordable? "1":"0.5"; }
   }
@@ -7361,7 +7403,7 @@ class Game{
     drawables.sort((a,b)=>a.depth-b.depth);
     for(const d of drawables) d.fn(ctx);
 
-    this._drawRoomLabels(ctx);
+    if(this.showRoomNames) this._drawRoomLabels(ctx);
     this._drawFloatingTexts(ctx);
 
     ctx.restore();
@@ -7504,22 +7546,6 @@ class Game{
         ctx.strokeStyle="rgba(0,0,0,.08)"; ctx.lineWidth=1; ctx.stroke();
       }
     }
-    // Room name labels (design feedback: an option to show/hide each room's name on the floor)
-    if(this.showRoomNames){
-      ctx.font="bold 11px sans-serif"; ctx.textAlign="center"; ctx.textBaseline="middle";
-      for(const r of this.hospital.rooms){
-        if(r._constructing || r._demolishing) continue;
-        const def = ROOM_TYPES[r.type];
-        const center = gridToScreen((r.x0+r.x1)/2, (r.y0+r.y1)/2);
-        ctx.save();
-        ctx.translate(center.x, center.y);
-        ctx.fillStyle="rgba(0,0,0,.55)";
-        ctx.fillText(def.name, 1, 1);
-        ctx.fillStyle="rgba(255,255,255,.92)";
-        ctx.fillText(def.name, 0, 0);
-        ctx.restore();
-      }
-    }
     // door threshold tiles get a light tint, so the opening is easy to spot at a glance
     for(const r of this.hospital.rooms){
       const y = r.doorSide==="north"? r.y0 : r.y1-1;
@@ -7574,6 +7600,17 @@ class Game{
         ctx.closePath();
         ctx.stroke();
       }
+      // The hospital's own outer walls are also fully hidden right now (see
+      // _pushBoundaryWalls) - trace the whole T-shaped footprint the same bold way, so the
+      // building's outline stays legible while placing something near its edge. The door gap
+      // stays visible on its own (drawn separately, unaffected by hideAll).
+      ctx.strokeStyle = "rgba(0,0,0,.85)";
+      ctx.lineWidth = 4;
+      const pts = this._hospitalOutlinePoints();
+      ctx.beginPath();
+      pts.forEach((p,i)=>{ const s=gridToScreen(p.x,p.y); i===0? ctx.moveTo(s.x,s.y): ctx.lineTo(s.x,s.y); });
+      ctx.closePath();
+      ctx.stroke();
       ctx.restore();
     }
   }
@@ -7662,15 +7699,21 @@ class Game{
           if(r.doorFrom>r.x0) pushSouthRun(r,r.x0,r.doorFrom,wallColor);
           if(r.doorTo<r.x1) pushSouthRun(r,r.doorTo,r.x1,wallColor);
           drawables.push({ depth:r.y1+(r.doorFrom+r.doorTo)/2, fn:(ctx)=>drawDoorOnWall(ctx,r.doorFrom,r.y1,r.doorTo,r.y1,WALL_H,r._doorOpenAmount) });
+          if(r.doorFrom>r.x0) pushWallDecor(drawables, r, "south", r.x0, r.doorFrom);
+          if(r.doorTo<r.x1) pushWallDecor(drawables, r, "south", r.doorTo, r.x1);
         } else {
           pushSouthRun(r, r.x0, r.x1, wallColor);
+          pushWallDecor(drawables, r, "south", r.x0, r.x1);
         }
         if(r.doorSide==="east"){
           if(r.doorFrom>r.y0) pushEastRun(r,r.y0,r.doorFrom,wallColor);
           if(r.doorTo<r.y1) pushEastRun(r,r.doorTo,r.y1,wallColor);
           drawables.push({ depth:r.x1+(r.doorFrom+r.doorTo)/2, fn:(ctx)=>drawDoorOnWall(ctx,r.x1,r.doorFrom,r.x1,r.doorTo,WALL_H,r._doorOpenAmount) });
+          if(r.doorFrom>r.y0) pushWallDecor(drawables, r, "east", r.y0, r.doorFrom);
+          if(r.doorTo<r.y1) pushWallDecor(drawables, r, "east", r.doorTo, r.y1);
         } else {
           pushEastRun(r, r.y0, r.y1, wallColor);
+          pushWallDecor(drawables, r, "east", r.y0, r.y1);
         }
       }
       }
@@ -7729,19 +7772,51 @@ class Game{
   // The hospital's own outer shell, all 4 sides rendered (unlike room walls, which cull their
   // near sides so the camera can see inside) - it's just an exterior shell, nothing to hide
   // behind it. One gap, at the entrance, is where every patient and every delivery comes through.
+  // Computes the T-shaped hospital footprint's outer polygon (in grid coordinates, clockwise),
+  // for the bold outline drawn in _drawBuildOverlay while the walls themselves are hidden.
+  // Explicit per-direction cases, same reasoning as _pushBoundaryWalls's own layout logic.
+  _hospitalOutlinePoints(){
+    const H = this.hospital, bar = H.bar, stem = H.stem, dir = H.direction;
+    if(dir==="down"){
+      return [
+        {x:bar.x0,y:bar.y0},{x:bar.x1,y:bar.y0},{x:bar.x1,y:bar.y1},
+        {x:stem.x1,y:bar.y1},{x:stem.x1,y:stem.y1},{x:stem.x0,y:stem.y1},
+        {x:stem.x0,y:bar.y1},{x:bar.x0,y:bar.y1},
+      ];
+    } else if(dir==="up"){
+      return [
+        {x:bar.x0,y:bar.y1},{x:bar.x1,y:bar.y1},{x:bar.x1,y:bar.y0},
+        {x:stem.x1,y:bar.y0},{x:stem.x1,y:stem.y0},{x:stem.x0,y:stem.y0},
+        {x:stem.x0,y:bar.y0},{x:bar.x0,y:bar.y0},
+      ];
+    } else if(dir==="right"){
+      return [
+        {x:bar.x0,y:bar.y0},{x:bar.x1,y:bar.y0},{x:bar.x1,y:stem.y0},
+        {x:stem.x1,y:stem.y0},{x:stem.x1,y:stem.y1},{x:bar.x1,y:stem.y1},
+        {x:bar.x1,y:bar.y1},{x:bar.x0,y:bar.y1},
+      ];
+    } else { // left
+      return [
+        {x:bar.x1,y:bar.y0},{x:bar.x0,y:bar.y0},{x:bar.x0,y:stem.y0},
+        {x:stem.x0,y:stem.y0},{x:stem.x0,y:stem.y1},{x:bar.x0,y:stem.y1},
+        {x:bar.x0,y:bar.y1},{x:bar.x1,y:bar.y1},
+      ];
+    }
+  }
   _pushBoundaryWalls(drawables){
     const color = "#5f5648";
     const H = this.hospital;
     const bar = H.bar, stem = H.stem, ent = H.entrance;
-    // Same convention as room walls: south/east-facing walls are the ones nearest the camera,
-    // and get hidden while placing a room or furniture (design feedback: they blocked the view
-    // of exactly the area the player is trying to place something in). North/west walls (and
-    // the entrance itself) stay visible either way, since they're not in the way of the view.
-    const hideNear = !!(this.buildMode || this.placeMode);
+    // Same as individual room walls: hide entirely while placing a room or furniture (design
+    // feedback: previously only south/east were hidden, but north/west could still block the
+    // view) - a bold outline of the whole building's footprint (see _drawBuildOverlay) replaces
+    // every wall while this is active. The door itself is drawn separately below and stays
+    // visible either way.
+    const hideAll = !!(this.buildMode || this.placeMode);
     // Horizontal wall run (fixed row, spanning x0..x1), tagged with which way it faces so the
     // near-wall hiding above can apply; optionally skips a gap range (the entrance).
     const hRun = (x0,x1,y,facing,gap)=>{
-      if(hideNear && (facing==="S"||facing==="E")) return;
+      if(hideAll) return;
       for(let x=x0;x<x1;x++){
         if(gap && x>=gap.x0 && x<gap.x1) continue;
         drawables.push({ depth: x+0.5+y, fn:(ctx)=>wallQuad(ctx,x,y,x+1,y,color,WALL_H_OUTER) });
@@ -7749,7 +7824,7 @@ class Game{
     };
     // Vertical wall run (fixed column, spanning y0..y1), same idea.
     const vRun = (x,y0,y1,facing,gap)=>{
-      if(hideNear && (facing==="S"||facing==="E")) return;
+      if(hideAll) return;
       for(let y=y0;y<y1;y++){
         if(gap && y>=gap.y0 && y<gap.y1) continue;
         drawables.push({ depth: x+y+0.5, fn:(ctx)=>wallQuad(ctx,x,y,x,y+1,color,WALL_H_OUTER) });
