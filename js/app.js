@@ -5,7 +5,7 @@
    0. CONSTANTS
    ========================================================================= */
 const TILE = 32;
-const GAME_VERSION = "1.9.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
+const GAME_VERSION = "2.1.0"; // bump this on every deploy - shown in Settings and on the start screen so players/devs can tell which build they're on
 const CONSTRUCTION_SECONDS = 5; // how long a build/demolish/hire takes to actually complete (design feedback: shouldn't be instant)
 // Map is sized to comfortably fit a randomly-generated T-shaped hospital footprint (see
 // Hospital._generateShape) in any of its 4 possible orientations, at roughly 50% more total
@@ -2373,6 +2373,10 @@ class Hospital{
       // Player-added windows on each wall (see the room detail panel's "Customize" section) -
       // purely cosmetic, always starts empty.
       windows: {north:false, south:false, east:false, west:false},
+      // Small nudge applied to every furniture piece's normal layout position (see
+      // furnitureParts/nudgeRoomFurniture) - lets the player shift the whole arrangement a bit
+      // within the room instead of it always sitting in the algorithmically "default" spot.
+      furnitureOffset: {dx:0, dy:0},
     };
     // Staff capacity (design feedback: "one room = one staff member" - multiple people sharing
     // a room, scaled by floor area, was confusing to reason about). The only two exceptions are
@@ -2477,15 +2481,19 @@ class Hospital{
     const cap = Math.max(1, room.staffCapacity||1);
     const cols = Math.max(1, Math.ceil(Math.sqrt(cap)));
     const col = index % cols;
-    const fx = (col+0.5)/cols;
-    return { x:(room.x + room.w*fx)*TILE, y:(room.y + room.h*0.32)*TILE };
+    const offset = room.furnitureOffset || {dx:0, dy:0};
+    const fx = clamp((col+0.5)/cols+offset.dx, 0.08, 0.92);
+    const fy = clamp(0.32+offset.dy, 0.08, 0.92);
+    return { x:(room.x + room.w*fx)*TILE, y:(room.y + room.h*fy)*TILE };
   }
   patientSlotWorld(room, index){
     const cap = Math.max(1, room.staffCapacity||1);
     const cols = Math.max(1, Math.ceil(Math.sqrt(cap)));
     const col = index % cols;
-    const fx = (col+0.5)/cols;
-    return { x:(room.x + room.w*fx)*TILE, y:(room.y + room.h*0.66)*TILE };
+    const offset = room.furnitureOffset || {dx:0, dy:0};
+    const fx = clamp((col+0.5)/cols+offset.dx, 0.08, 0.92);
+    const fy = clamp(0.66+offset.dy, 0.08, 0.92);
+    return { x:(room.x + room.w*fx)*TILE, y:(room.y + room.h*fy)*TILE };
   }
   // lowest free staff-slot index in a room, so multiple staff assigned to the same room don't
   // end up stacked on the same desk (same collision-avoidance pattern as waiting-room seating)
@@ -3159,6 +3167,7 @@ class Game{
     this.speedMult = 1;
     this.paused = true;
     this.hasStartedPlaying = false;
+    this.loan = null;
     this.lastTs = 0;
     this.spawnTimer = 12;
     this._buildGrassPattern();
@@ -3295,12 +3304,13 @@ class Game{
       activeEmergency:this.activeEmergency,
       policy:this.policy,
       hasStartedPlaying:this.hasStartedPlaying,
+      loan:this.loan,
       statsHistory:this.statsHistory,
       hospitalShape:{ bar:this.hospital.bar, stem:this.hospital.stem, entrance:this.hospital.entrance, direction:this.hospital.direction },
       objects:this.hospital.objects.map(o=>({id:o.id,type:o.type,x:o.x,y:o.y})),
       messes:this.hospital.messes.map(m=>({id:m.id,x:m.x,y:m.y,tileX:m.tileX,tileY:m.tileY,type:m.type,patientId:m.patientId})),
       day:this.day, simTime:this.simTime,
-      rooms:this.hospital.rooms.map(r=>({id:r.id,type:r.type,x:r.x,y:r.y,w:r.w,h:r.h,level:r.level,doorSide:r.doorSide,patientsServed:r.patientsServed,condition:r.condition,machineDurability:r.machineDurability,machineBroken:r.machineBroken,_constructing:r._constructing,_constructionTimer:r._constructionTimer,_demolishing:r._demolishing,_demolishTimer:r._demolishTimer,lastServedAt:r.lastServedAt,windows:r.windows})),
+      rooms:this.hospital.rooms.map(r=>({id:r.id,type:r.type,x:r.x,y:r.y,w:r.w,h:r.h,level:r.level,doorSide:r.doorSide,patientsServed:r.patientsServed,condition:r.condition,machineDurability:r.machineDurability,machineBroken:r.machineBroken,_constructing:r._constructing,_constructionTimer:r._constructionTimer,_demolishing:r._demolishing,_demolishTimer:r._demolishTimer,lastServedAt:r.lastServedAt,windows:r.windows,furnitureOffset:r.furnitureOffset})),
       staff:this.staff.map(s=>({id:s.id,type:s.type,name:s.name,x:s.x,y:s.y,skill:s.skill,skillPoints:s.skillPoints,specialty:s.specialty,energy:s.energy,assignedRoomId:s.assignedRoomId,thirst:s.thirst,pendingHire:s.pendingHire,pendingHireTimer:s.pendingHireTimer,workEthic:s.workEthic,hourlyCostMult:s.hourlyCostMult})),
       patients:this.patients.map(p=>({id:p.id,name:p.name,age:p.age,diseaseKey:p.diseaseKey,health:p.health,happiness:p.happiness,x:p.x,y:p.y,state:p.state,diagnosisProgress:p.diagnosisProgress,thirst:p.thirst,isEmergency:p.isEmergency,diagnosed:p.diagnosed,diagnosisConfidence:p.diagnosisConfidence,diagnosisAttempts:p.diagnosisAttempts,milkedCount:p.milkedCount,deadTimer:p.deadTimer}))
     };
@@ -3322,6 +3332,7 @@ class Game{
     this.activeEmergency = data.activeEmergency || null;
     this.policy = data.policy ? { diagnosisTermination:100, staffRestThreshold:50, staffLeaveRooms:false, ...data.policy } : this.policy;
     this.hasStartedPlaying = data.hasStartedPlaying ?? true; // older saves predate this flag - assume already playing
+    this.loan = data.loan || null;
     this.statsHistory = data.statsHistory||[];
     this.day = data.day||1;
     this.simTime = data.simTime||0;
@@ -3344,6 +3355,7 @@ class Game{
       room._demolishing = !!r._demolishing;
       room._demolishTimer = r._demolishTimer||0;
       if(r.windows) room.windows = r.windows;
+      if(r.furnitureOffset) room.furnitureOffset = r.furnitureOffset;
     });
     (data.objects||[]).forEach(o=>{
       this.hospital.objects.push({ id:o.id, type:o.type, x:o.x, y:o.y, occupiedBy:null });
@@ -4027,6 +4039,22 @@ class Game{
     });
 
     document.getElementById("mgOpenPolicy").addEventListener("click", ()=>this.togglePanel("panelPolicy","mgOpenPolicy"));
+    document.getElementById("mgOpenLoan").addEventListener("click", ()=>{
+      this.closeAllPanels();
+      this._refreshLoanPanel();
+      document.getElementById("panelLoan").classList.add("show");
+    });
+    document.getElementById("loanAmountSlider").addEventListener("input", ()=>this._refreshLoanQuote());
+    document.getElementById("loanTermSlider").addEventListener("input", ()=>this._refreshLoanQuote());
+    document.getElementById("loanTakeBtn").addEventListener("click", ()=>{
+      const amount = parseInt(document.getElementById("loanAmountSlider").value,10);
+      const termDays = parseInt(document.getElementById("loanTermSlider").value,10);
+      this.takeLoan(amount, termDays);
+      this._refreshLoanPanel();
+    });
+    document.getElementById("loanPayOffBtn").addEventListener("click", ()=>{
+      this.showConfirm("Pay off the remaining loan balance now?", ()=>{ this.payOffLoan(); this._refreshLoanPanel(); });
+    });
     const diagSlider = document.getElementById("polDiagSlider");
     const diagVal = document.getElementById("polDiagVal");
     diagSlider.addEventListener("input", ()=>{
@@ -4544,6 +4572,99 @@ class Game{
     document.getElementById("mgStaffCount").textContent = this.staff.length;
     document.getElementById("mgRoomCount").textContent = this.hospital.rooms.length;
     this._renderEconomyChart();
+  }
+
+  // Interest rate quote for a loan (design feedback: "un taux d'intérêt qui dépend du montant
+  // emprunté, de la durée, etc") - a base rate that climbs with both how much is borrowed and
+  // how long it's borrowed for, since both make the loan riskier for the bank. Returns an
+  // annual rate; daily compounding is derived from this in _computeLoanQuote.
+  _quoteLoanRate(amount, termDays){
+    const amountFactor = clamp(amount/50000, 0, 1) * 0.06;
+    const termFactor = clamp(termDays/90, 0, 1) * 0.05;
+    return 0.10 + amountFactor + termFactor; // 10%-21% APR
+  }
+  // Standard amortization math: a fixed daily payment that pays off both principal and accrued
+  // interest over exactly termDays days.
+  _computeLoanQuote(amount, termDays){
+    const annualRate = this._quoteLoanRate(amount, termDays);
+    const dailyRate = annualRate/365;
+    const dailyPayment = dailyRate<=0 ? amount/termDays : amount*dailyRate/(1-Math.pow(1+dailyRate,-termDays));
+    const totalRepaid = dailyPayment*termDays;
+    return { annualRate, dailyRate, dailyPayment, totalRepaid, totalInterest: totalRepaid-amount };
+  }
+  takeLoan(amount, termDays){
+    if(this.loan){ this.pushToast("You already have an active loan - pay it off first.", "bad", true); return; }
+    amount = clamp(Math.round(amount/500)*500, 500, 50000);
+    termDays = clamp(Math.round(termDays), 7, 90);
+    const quote = this._computeLoanQuote(amount, termDays);
+    this.economy.earn(amount);
+    this.loan = {
+      principal: amount, annualRate: quote.annualRate, dailyRate: quote.dailyRate,
+      dailyPayment: quote.dailyPayment, termDays, daysRemaining: termDays,
+      balance: amount, totalPaid: 0, interestPaid: 0,
+    };
+    this.pushToast("Loan of "+fmtMoney(amount)+" $ taken - "+fmtMoney(Math.round(quote.dailyPayment))+" $/day for "+termDays+" days.", "good");
+    this._refreshLoanPanel();
+    this.save();
+  }
+  // Called once per in-game day (see _onNewDay) - takes the fixed daily payment out of the
+  // takings automatically, same idea as staff salaries or room upkeep, and tracks running
+  // totals so the loan panel can show exactly how much has been paid and how much was interest.
+  _chargeLoanPayment(){
+    if(!this.loan) return;
+    const interestPortion = this.loan.balance*this.loan.dailyRate;
+    let payment = this.loan.dailyPayment;
+    if(this.loan.daysRemaining<=1) payment = this.loan.balance+interestPortion; // clears exactly, no stray fractional balance
+    payment = Math.round(payment);
+    this.economy.spend(payment);
+    this.loan.balance = Math.max(0, this.loan.balance+interestPortion-payment);
+    this.loan.totalPaid += payment;
+    this.loan.interestPaid += interestPortion;
+    this.loan.daysRemaining--;
+    if(this.loan.daysRemaining<=0 || this.loan.balance<=0.5){
+      this.pushToast("🏦 Loan fully repaid!", "good", true);
+      this.loan = null;
+    }
+  }
+  payOffLoan(){
+    if(!this.loan) return;
+    const remaining = Math.round(this.loan.balance);
+    if(!this.economy.canAfford(remaining)){ this.pushToast("Not enough money to pay off the loan.", "bad", true); return; }
+    this.economy.spend(remaining);
+    this.loan = null;
+    this.pushToast("🏦 Loan paid off early!", "good");
+    this._refreshLoanPanel();
+    this.save();
+  }
+  _refreshLoanPanel(){
+    const noneView = document.getElementById("loanNoneView");
+    const activeView = document.getElementById("loanActiveView");
+    if(this.loan){
+      noneView.style.display = "none";
+      activeView.style.display = "";
+      document.getElementById("loanActivePrincipal").textContent = fmtMoney(this.loan.principal)+" $";
+      document.getElementById("loanActiveRate").textContent = Math.round(this.loan.annualRate*100)+"% APR";
+      document.getElementById("loanActiveDaily").textContent = fmtMoney(Math.round(this.loan.dailyPayment))+" $/day";
+      document.getElementById("loanActiveDaysLeft").textContent = this.loan.daysRemaining+" days";
+      document.getElementById("loanActiveBalance").textContent = fmtMoney(Math.round(this.loan.balance))+" $";
+      document.getElementById("loanActivePaid").textContent = fmtMoney(Math.round(this.loan.totalPaid))+" $";
+      document.getElementById("loanActiveInterestPaid").textContent = fmtMoney(Math.round(this.loan.interestPaid))+" $";
+    } else {
+      noneView.style.display = "";
+      activeView.style.display = "none";
+      this._refreshLoanQuote();
+    }
+  }
+  _refreshLoanQuote(){
+    const amount = parseInt(document.getElementById("loanAmountSlider").value,10);
+    const termDays = parseInt(document.getElementById("loanTermSlider").value,10);
+    document.getElementById("loanAmountVal").textContent = fmtMoney(amount);
+    document.getElementById("loanTermVal").textContent = termDays;
+    const quote = this._computeLoanQuote(amount, termDays);
+    document.getElementById("loanQuoteRate").textContent = Math.round(quote.annualRate*100)+"% APR";
+    document.getElementById("loanQuoteDaily").textContent = fmtMoney(Math.round(quote.dailyPayment))+" $/day";
+    document.getElementById("loanQuoteTotal").textContent = fmtMoney(Math.round(quote.totalRepaid))+" $";
+    document.getElementById("loanQuoteInterest").textContent = fmtMoney(Math.round(quote.totalInterest))+" $";
   }
 
   // Full staff roster (design feedback: needs a global list, not just "who's in this room"),
@@ -5382,6 +5503,42 @@ class Game{
         custRow.appendChild(wBtn);
       });
       body.appendChild(custRow);
+      // Furniture position nudge (design feedback: "déplacer le mobilier") - shifts the whole
+      // desk/machine/bed arrangement a little within the room, and where staff/patients
+      // actually stand to use it moves right along with it (see staffSlotWorld/
+      // patientSlotWorld), so it never looks like furniture floating away from the person using it.
+      if(def.furniture){
+        const furnLabel = document.createElement("div");
+        furnLabel.className="entityListLabel"; furnLabel.textContent="Furniture position";
+        body.appendChild(furnLabel);
+        const furnRow = document.createElement("div");
+        furnRow.style.cssText = "display:flex;gap:6px;align-items:center;justify-content:center;margin-bottom:10px;";
+        const step = 0.07;
+        const mkNudgeBtn = (label, dx, dy)=>{
+          const b = document.createElement("button");
+          b.className="panelBtn ghost"; b.textContent=label;
+          b.style.cssText="min-width:38px;min-height:38px;padding:6px;font-size:15px;";
+          b.addEventListener("click", ()=>{ this.nudgeRoomFurniture(room, dx, dy); this._openRoomInfo(room, true); });
+          return b;
+        };
+        furnRow.appendChild(mkNudgeBtn("◀", -step, 0));
+        const vCol = document.createElement("div");
+        vCol.style.cssText="display:flex;flex-direction:column;gap:4px;";
+        vCol.appendChild(mkNudgeBtn("▲", 0, -step));
+        vCol.appendChild(mkNudgeBtn("▼", 0, step));
+        furnRow.appendChild(vCol);
+        furnRow.appendChild(mkNudgeBtn("▶", step, 0));
+        const resetBtn = document.createElement("button");
+        resetBtn.className="panelBtn ghost"; resetBtn.textContent="Reset";
+        resetBtn.style.cssText="min-height:38px;font-size:11.5px;margin-left:6px;padding:6px 10px;";
+        resetBtn.addEventListener("click", ()=>{
+          room.furnitureOffset = {dx:0, dy:0};
+          this.save();
+          this._openRoomInfo(room, true);
+        });
+        furnRow.appendChild(resetBtn);
+        body.appendChild(furnRow);
+      }
     }
 
     const btnRow = document.createElement("div");
@@ -5442,6 +5599,19 @@ class Game{
   toggleRoomWindow(room, side){
     room.windows = room.windows || {north:false, south:false, east:false, west:false};
     room.windows[side] = !room.windows[side];
+    this.save();
+  }
+  // Nudges the whole furniture arrangement (and where staff/patients actually stand to use it -
+  // see staffSlotWorld/patientSlotWorld) a little in one direction (see the room detail panel's
+  // "Customize" section) - clamped to a modest range so it always stays believably inside the
+  // room regardless of how many times the player pushes it the same way.
+  nudgeRoomFurniture(room, dx, dy){
+    room.furnitureOffset = room.furnitureOffset || {dx:0, dy:0};
+    room.furnitureOffset.dx = clamp(room.furnitureOffset.dx+dx, -0.28, 0.28);
+    room.furnitureOffset.dy = clamp(room.furnitureOffset.dy+dy, -0.28, 0.28);
+    // slot indices don't change, but a staff/patient mid-walk toward the old spot should
+    // retarget toward the new one rather than finishing their approach to a now-stale position
+    this.staff.forEach(s=>{ if(s.assignedRoomId===room.id && (s.state==="toWork"||s.state==="enteringRoom")) s.path=null; });
     this.save();
   }
 
@@ -5727,6 +5897,14 @@ class Game{
   // so it's a real, completable challenge rather than a trap. Un-cured patients aren't killed
   // when the clock runs out - they just fall back to being ordinary patients and the bonus is
   // lost, matching the spec's "reward if successful" framing rather than a punishment mechanic.
+  // Single source of truth for "how far into the difficulty curve are we" (design feedback:
+  // difficulty should keep evolving over time - more/harder diseases, more frequent
+  // emergencies/events, more patients - not plateau early). 0 at day 6 (when emergencies first
+  // become possible), climbing to 1 around day 46, kept available past that for anything that
+  // wants to keep scaling slowly forever rather than hard-capping.
+  _difficultyProgress(){
+    return clamp((this.day-6)/40, 0, 1);
+  }
   _maybeTriggerEmergency(dt){
     if(this.activeEmergency){
       const em = this.activeEmergency;
@@ -5759,9 +5937,12 @@ class Game{
     }
     this._emergencyCooldown = (this._emergencyCooldown||0) - dt;
     if(this._emergencyCooldown > 0) return;
-    this._emergencyCooldown = 150 + Math.random()*150; // check roughly every 150-300 sim-seconds (was 40-80, then 70-140 - still firing faster than a small hospital's single-capacity rooms could absorb on top of normal traffic)
+    // Cooldown shrinks and the fire-chance grows as the days pass (design feedback: exceptional
+    // events should get more frequent over time, not stay flat forever past the initial ramp-in).
+    const diff = this._difficultyProgress();
+    this._emergencyCooldown = lerp(300, 130, diff) + Math.random()*100;
     if(this.day < 6) return; // give the player more time to get the basics running first
-    if(Math.random() > 0.25) return; // not every check window actually fires one
+    if(Math.random() > lerp(0.2, 0.45, diff)) return; // not every check window actually fires one
     const recRooms = this.hospital.roomsOfType("reception");
     if(recRooms.length===0 || this.patients.length>14) return;
     // only diseases whose treatment room is actually built AND staffed - an emergency for a
@@ -5977,6 +6158,7 @@ class Game{
       const rate = ROOM_TYPES[r.type].decayRate||0;
       r.condition = clamp((r.condition==null?100:r.condition) - rate, 0, 100);
     });
+    this._chargeLoanPayment();
     // record the day that's ending before resetting the daily counters, so the Manage tab
     // can chart income vs expense history
     this.economy.history.push({ day:this.day, income:this.economy.dailyIncome, expense:this.economy.dailyExpense });
@@ -5986,7 +6168,9 @@ class Game{
     if(this.economy.money < 0){
       this.pushToast("⚠ Negative cash flow! Cut your expenses.", "bad");
     }
-    if(Math.random()<0.35){ this._triggerRandomEvent(); }
+    // Random daily events also get more frequent as the days pass (same difficulty curve as
+    // emergencies), instead of a flat 35% chance forever.
+    if(Math.random() < lerp(0.28, 0.5, this._difficultyProgress())){ this._triggerRandomEvent(); }
     this.save();
   }
 
@@ -6017,18 +6201,20 @@ class Game{
     if(this.spawnTimer<=0){
       const recRooms = this.hospital.roomsOfType("reception");
       // Fewer patients allowed in early on (design feedback: the flow should start light) -
-      // grows gradually as the days pass, capping at the original 20.
-      const capacityLimit = Math.round(clamp(6 + this.day*0.8, 6, 20));
+      // grows gradually as the days pass. Ceiling raised and the ramp stretched out further
+      // (design feedback: difficulty should keep evolving over time rather than plateauing
+      // early) - now keeps climbing until day ~48 instead of leveling off by day ~18.
+      const capacityLimit = Math.round(clamp(6 + this.day*0.5, 6, 30));
       if(recRooms.length>0 && this.patients.length<capacityLimit){
         const diseaseKey = this._pickDiseaseKey();
         const p = new Patient(this.hospital, diseaseKey);
         this.patients.push(p);
       }
-      // Spawn interval itself also ramps down gradually over the first ~2 weeks instead of
-      // being a fixed 6-14s from day 1 - a brand new, barely-staffed hospital gets a gentler
-      // trickle of patients rather than being flooded immediately.
-      const rampProgress = clamp(this.day/14, 0, 1);
-      const minGap = lerp(16, 6, rampProgress), maxGap = lerp(26, 14, rampProgress);
+      // Spawn interval itself also ramps down gradually - stretched to match the same ~40-day
+      // difficulty curve as emergencies/events (_difficultyProgress) instead of finishing by
+      // day 14 and then never getting busier again.
+      const rampProgress = this._difficultyProgress();
+      const minGap = lerp(16, 5, rampProgress), maxGap = lerp(26, 11, rampProgress);
       this.spawnTimer = minGap + Math.random()*(maxGap-minGap);
     }
   }
@@ -7728,8 +7914,12 @@ class Game{
       // furniture, each part positioned at its own fractional spot in the room and projected
       // individually - correctly depth-sorts against characters piece by piece
       if(def.furniture){
+        const offset = r.furnitureOffset || {dx:0, dy:0};
         for(const part of furnitureParts(r, def)){
-          const gx = r.x0 + r.w*part.fx, gy = r.y0 + r.h*part.fy;
+          // Clamped so a nudge can't push furniture through a wall - stays within the room's
+          // own floor area regardless of how far the player pushes it.
+          const fx = clamp(part.fx+offset.dx, 0.08, 0.92), fy = clamp(part.fy+offset.dy, 0.08, 0.92);
+          const gx = r.x0 + r.w*fx, gy = r.y0 + r.h*fy;
           const anchor = gridToScreen(gx, gy);
           drawables.push({ depth: gx+gy, fn:(ctx)=>drawFurniturePart(ctx, part.part, anchor.x, anchor.y) });
         }

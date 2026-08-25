@@ -224,6 +224,37 @@
     <div class="panelBtnRow">
       <button class="panelBtn primary" id="mgOpenPolicy" style="width:100%;">📋 Hospital Policy</button>
     </div>
+    <div class="panelBtnRow">
+      <button class="panelBtn primary" id="mgOpenLoan" style="width:100%;">🏦 Bank Loan</button>
+    </div>
+  </div>
+
+  <div class="panel" id="panelLoan">
+    <h3>🏦 Bank Loan <button class="closeX" data-close="panelLoan">✕</button></h3>
+    <div id="loanNoneView">
+      <div class="statRow"><span class="label">Amount</span><b><span id="loanAmountVal">5 000</span> $</b></div>
+      <input type="range" id="loanAmountSlider" min="500" max="50000" step="500" value="5000">
+      <div class="statRow" style="margin-top:8px;"><span class="label">Term</span><b><span id="loanTermVal">30</span> days</b></div>
+      <input type="range" id="loanTermSlider" min="7" max="90" step="1" value="30">
+      <div class="loanQuoteBox">
+        <div class="statRow"><span class="label">Interest rate</span><b id="loanQuoteRate">–</b></div>
+        <div class="statRow"><span class="label">Daily payment</span><b id="loanQuoteDaily">–</b></div>
+        <div class="statRow"><span class="label">Total repaid</span><b id="loanQuoteTotal">–</b></div>
+        <div class="statRow"><span class="label">Total interest</span><b id="loanQuoteInterest">–</b></div>
+      </div>
+      <div class="policyDesc">The daily payment is taken automatically from your takings each day until the loan is paid off. Bigger amounts and longer terms carry a higher interest rate - the bank isn't a charity.</div>
+      <button class="panelBtn primary" id="loanTakeBtn" style="width:100%;margin-top:10px;">Take this loan</button>
+    </div>
+    <div id="loanActiveView" style="display:none;">
+      <div class="statRow"><span class="label">Original amount</span><b id="loanActivePrincipal">–</b></div>
+      <div class="statRow"><span class="label">Interest rate</span><b id="loanActiveRate">–</b></div>
+      <div class="statRow"><span class="label">Daily payment</span><b id="loanActiveDaily">–</b></div>
+      <div class="statRow"><span class="label">Days remaining</span><b id="loanActiveDaysLeft">–</b></div>
+      <div class="statRow"><span class="label">Remaining balance</span><b id="loanActiveBalance">–</b></div>
+      <div class="statRow"><span class="label">Paid so far</span><b id="loanActivePaid">–</b></div>
+      <div class="statRow"><span class="label">Interest paid so far</span><b id="loanActiveInterestPaid">–</b></div>
+      <button class="panelBtn danger" id="loanPayOffBtn" style="width:100%;margin-top:12px;">Pay off remaining balance now</button>
+    </div>
   </div>
 
   <div class="panel" id="panelPolicy">
